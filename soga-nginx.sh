@@ -2007,7 +2007,8 @@ menu() {
     fi
     configNginx
 	colorEcho $RED
-	colorEcho $GREEN "安装完成，请设置soga的服务端口为${V2PORT} ,连接端口为${PORT}!"
+	colorEcho $GREEN "安装完成，v2ray监听端口为${V2PORT} ,nginx监听端口为${PORT}!"
+	colorEcho $GREEN "v2board 对接设置服务端口为${V2PORT} ,连接端口为${PORT}!"
 	colorEcho $GREEN "传输协议配置如下："
 	colorEcho $RED  "{"
 	colorEcho $RED  "\"path\": \"${WSPATH}\","	
