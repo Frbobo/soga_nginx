@@ -1985,7 +1985,7 @@ menu() {
 		WS="true"
 		TLS="true"
 		getData
-
+	soga config force_close_ssl=true
     $PMT clean all
     [[ "$PMT" = "apt" ]] && $PMT update
     #echo $CMD_UPGRADE | bash
