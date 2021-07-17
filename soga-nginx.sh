@@ -2006,6 +2006,7 @@ menu() {
         getCert
     fi
     configNginx
+    soga restart
     service nginx start
 	colorEcho $RED
 	colorEcho $GREEN "安装完成，v2ray监听端口为${V2PORT} ,nginx监听端口为${PORT}!"
