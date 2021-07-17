@@ -2010,14 +2010,17 @@ menu() {
     service nginx start
 	colorEcho $RED
 	colorEcho $GREEN "安装完成，v2ray监听端口为${V2PORT} ,nginx监听端口为${PORT}!"
-	colorEcho $GREEN "v2board 对接设置服务端口为${V2PORT} ,连接端口为${PORT}!"
-	colorEcho $GREEN "传输协议配置如下："
+	colorEcho $GREEN "-----------v2board节点配置-----------------------------"
+	colorEcho $RED " 设置服务端口为${V2PORT} ,连接端口为${PORT}!"
+	colorEcho $RED "传输协议配置如下："
 	colorEcho $RED  "{"
 	colorEcho $RED  "\"path\": \"${WSPATH}\","	
 	colorEcho $RED  "\"headers\": {"
 	colorEcho $RED  "      \"Host\": \"${DOMAIN}\""	
 	colorEcho $RED  "}"
 	colorEcho $RED  "}"	
+	colorEcho $GREEN "----------sspanel节点配置----------------------"
+	colorEcho $RED  "${IP};${V2PORT};0;ws;;path=${WSPATH}|server=${IP}|host=${DOMAIN}|outside_port=${PORT}"	
 			#soga config force_close_ssl=true
 			
 			# {
