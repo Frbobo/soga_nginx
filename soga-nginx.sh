@@ -2020,9 +2020,9 @@ menu() {
 	colorEcho $RED  "}"
 	colorEcho $RED  "}"	
 	colorEcho $GREEN "----------sspanel节点配置----------------------"
-	colorEcho $RED  "${IP};${V2PORT};0;ws;tls;path=${WSPATH}|server=${IP}|host=${DOMAIN}|outside_port=${PORT}"	
+	colorEcho $RED  "${IP};${V2PORT};0;ws;tls;path=${WSPATH}|server=${IP}|host=${DOMAIN}"	
 			#soga config force_close_ssl=true
-			
+			#|outside_port=${PORT}
 			# {
             # "path": "/login",
             # "headers": {
