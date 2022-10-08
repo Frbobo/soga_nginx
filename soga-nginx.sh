@@ -1,2053 +1,710 @@
-#!/bin/bash
-# v2ray一键安装脚本
-# Author: hijk<https://hijk.art>
+#!/usr/bin/env bash
+PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
+export PATH
 
+#=================================================
+#	System Required: CentOS/Debian/Ubuntu
+#	Description: Brook
+#	Version: 1.0.6
+#	Author: Toyo
+#	Blog: https://doub.io/wlzy-jc37/
+#=================================================
 
-RED="\033[31m"      # Error message
-GREEN="\033[32m"    # Success message
-YELLOW="\033[33m"   # Warning message
-BLUE="\033[36m"     # Info message
-PLAIN='\033[0m'
+sh_ver="1.0.6"
+filepath=$(cd "$(dirname "$0")"; pwd)
+file_1=$(echo -e "${filepath}"|awk -F "$0" '{print $1}')
+file="/usr/local/brook-pf"
+brook_file="/usr/local/brook-pf/brook"
+brook_conf="/usr/local/brook-pf/brook.conf"
+brook_log="/usr/local/brook-pf/brook.log"
+Crontab_file="/usr/bin/crontab"
 
-# 以下网站是随机从Google上找到的无广告小说网站，不喜欢请改成其他网址，以http或https开头
-# 搭建好后无法打开伪装域名，可能是反代小说网站挂了，请在网站留言，或者Github发issue，以便替换新的网站
-SITES=(
-http://www.zhuizishu.com/
-http://xs.56dyc.com/
-#http://www.xiaoshuosk.com/
-#https://www.quledu.net/
-http://www.ddxsku.com/
-http://www.biqu6.com/
-https://www.wenshulou.cc/
-#http://www.auutea.com/
-http://www.55shuba.com/
-http://www.39shubao.com/
-https://www.23xsw.cc/
-https://www.huanbige.com/
-https://www.jueshitangmen.info/
-https://www.zhetian.org/
-http://www.bequgexs.com/
-http://www.tjwl.com/
-)
+Green_font_prefix="\033[32m" && Red_font_prefix="\033[31m" && Green_background_prefix="\033[42;37m" && Red_background_prefix="\033[41;37m" && Font_color_suffix="\033[0m"
+Info="${Green_font_prefix}[信息]${Font_color_suffix}"
+Error="${Red_font_prefix}[错误]${Font_color_suffix}"
+Tip="${Green_font_prefix}[注意]${Font_color_suffix}"
 
-CONFIG_FILE="/etc/v2ray/config.json"
-SERVICE_FILE="/etc/systemd/system/v2ray.service"
-OS=`hostnamectl | grep -i system | cut -d: -f2`
-
-V6_PROXY=""
-IP=`curl -sL -4 ip.sb`
-if [[ "$?" != "0" ]]; then
-    IP=`curl -sL -6 ip.sb`
-    V6_PROXY="https://gh.hijk.art/"
-fi
-
-BT="false"
-NGINX_CONF_PATH="/etc/nginx/conf.d/"
-res=`which bt 2>/dev/null`
-if [[ "$res" != "" ]]; then
-    BT="true"
-    NGINX_CONF_PATH="/www/server/panel/vhost/nginx/"
-fi
-
-VLESS="false"
-TROJAN="false"
-TLS="false"
-WS="false"
-XTLS="false"
-KCP="false"
-
-checkSystem() {
-    result=$(id | awk '{print $1}')
-    if [[ $result != "uid=0(root)" ]]; then
-        colorEcho $RED " 请以root身份执行该脚本"
-        exit 1
-    fi
-
-    res=`which yum 2>/dev/null`
-    if [[ "$?" != "0" ]]; then
-        res=`which apt 2>/dev/null`
-        if [[ "$?" != "0" ]]; then
-            colorEcho $RED " 不受支持的Linux系统"
-            exit 1
-        fi
-        PMT="apt"
-        CMD_INSTALL="apt install -y "
-        CMD_REMOVE="apt remove -y "
-        CMD_UPGRADE="apt update; apt upgrade -y; apt autoremove -y"
-    else
-        PMT="yum"
-        CMD_INSTALL="yum install -y "
-        CMD_REMOVE="yum remove -y "
-        CMD_UPGRADE="yum update -y"
-    fi
-    res=`which systemctl 2>/dev/null`
-    if [[ "$?" != "0" ]]; then
-        colorEcho $RED " 系统版本过低，请升级到最新版本"
-        exit 1
-    fi
+check_root(){
+	[[ $EUID != 0 ]] && echo -e "${Error} 当前非ROOT账号(或没有ROOT权限)，无法继续操作，请更换ROOT账号或使用 ${Green_background_prefix}sudo su${Font_color_suffix} 命令获取临时ROOT权限（执行后可能会提示输入当前账号的密码）。" && exit 1
 }
-
-colorEcho() {
-    echo -e "${1}${@:2}${PLAIN}"
-}
-
-configNeedNginx() {
-    local ws=`grep wsSettings $CONFIG_FILE`
-    if [[ -z "$ws" ]]; then
-        echo no
-        return
+#检查系统
+check_sys(){
+	if [[ -f /etc/redhat-release ]]; then
+		release="centos"
+	elif cat /etc/issue | grep -q -E -i "debian"; then
+		release="debian"
+	elif cat /etc/issue | grep -q -E -i "ubuntu"; then
+		release="ubuntu"
+	elif cat /etc/issue | grep -q -E -i "centos|red hat|redhat"; then
+		release="centos"
+	elif cat /proc/version | grep -q -E -i "debian"; then
+		release="debian"
+	elif cat /proc/version | grep -q -E -i "ubuntu"; then
+		release="ubuntu"
+	elif cat /proc/version | grep -q -E -i "centos|red hat|redhat"; then
+		release="centos"
     fi
-    echo yes
+	bit=`uname -m`
 }
-
-needNginx() {
-    if [[ "$WS" = "false" ]]; then
-        echo no
-        return
-    fi
-    echo yes
+check_installed_status(){
+	[[ ! -e ${brook_file} ]] && echo -e "${Error} Brook 没有安装，请检查 !" && exit 1
 }
-
-status() {
-    if [[ ! -f /usr/bin/v2ray/v2ray ]]; then
-        echo 0
-        return
-    fi
-    if [[ ! -f $CONFIG_FILE ]]; then
-        echo 1
-        return
-    fi
-    port=`grep port $CONFIG_FILE| head -n 1| cut -d: -f2| tr -d \",' '`
-    res=`ss -nutlp| grep ${port} | grep -i v2ray`
-    if [[ -z "$res" ]]; then
-        echo 2
-        return
-    fi
-
-    if [[ `configNeedNginx` != "yes" ]]; then
-        echo 3
-    else
-        res=`ss -nutlp|grep -i nginx`
-        if [[ -z "$res" ]]; then
-            echo 4
-        else
-            echo 5
-        fi
-    fi
+check_crontab_installed_status(){
+	if [[ ! -e ${Crontab_file} ]]; then
+		echo -e "${Error} Crontab 没有安装，开始安装..."
+		if [[ ${release} == "centos" ]]; then
+			yum install crond -y
+		else
+			apt-get install cron -y
+		fi
+		if [[ ! -e ${Crontab_file} ]]; then
+			echo -e "${Error} Crontab 安装失败，请检查！" && exit 1
+		else
+			echo -e "${Info} Crontab 安装成功！"
+		fi
+	fi
 }
-
-statusText() {
-    res=`status`
-    case $res in
-        2)
-            echo -e ${GREEN}已安装${PLAIN} ${RED}未运行${PLAIN}
-            ;;
-        3)
-            echo -e ${GREEN}已安装${PLAIN} ${GREEN}V2ray正在运行${PLAIN}
-            ;;
-        4)
-            echo -e ${GREEN}已安装${PLAIN} ${GREEN}V2ray正在运行${PLAIN}, ${RED}Nginx未运行${PLAIN}
-            ;;
-        5)
-            echo -e ${GREEN}已安装${PLAIN} ${GREEN}V2ray正在运行, Nginx正在运行${PLAIN}
-            ;;
-        *)
-            echo -e ${RED}未安装${PLAIN}
-            ;;
-    esac
+check_pid(){
+	PID=$(ps -ef| grep "brook relays"| grep -v grep| grep -v ".sh"| grep -v "init.d"| grep -v "service"| awk '{print $2}')
 }
-
-normalizeVersion() {
-    if [ -n "$1" ]; then
-        case "$1" in
-            v*)
-                echo "$1"
-            ;;
-            *)
-                echo "v$1"
-            ;;
-        esac
-    else
-        echo ""
-    fi
+check_new_ver(){
+	echo -e "请输入要下载安装的 Brook 版本号 ${Green_font_prefix}[ 格式是日期，例如: v20180909 ]${Font_color_suffix}
+版本列表请去这里获取：${Green_font_prefix}[ https://github.com/txthinking/brook/releases ]${Font_color_suffix}"
+	read -e -p "直接回车即自动获取:" brook_new_ver
+	if [[ -z ${brook_new_ver} ]]; then
+		brook_new_ver=$(wget -qO- https://ghproxy.com/https://api.github.com/repos/txthinking/brook/releases| grep "tag_name"| head -n 1| awk -F ":" '{print $2}'| sed 's/\"//g;s/,//g;s/ //g')
+		[[ -z ${brook_new_ver} ]] && echo -e "${Error} Brook 最新版本获取失败！" && exit 1
+		echo -e "${Info} 检测到 Brook 最新版本为 [ ${brook_new_ver} ]"
+	else
+		echo -e "${Info} 开始下载 Brook [ ${brook_new_ver} ] 版本！"
+	fi
 }
-
-# 1: new V2Ray. 0: no. 1: yes. 2: not installed. 3: check failed.
-getVersion() {
-    VER="$(/usr/bin/v2ray/v2ray -version 2>/dev/null)"
-    RETVAL=$?
-    CUR_VER="$(normalizeVersion "$(echo "$VER" | head -n 1 | cut -d " " -f2)")"
-    TAG_URL="${V6_PROXY}https://api.github.com/repos/v2fly/v2ray-core/releases/latest"
-    NEW_VER="$(normalizeVersion "$(curl -s "${TAG_URL}" --connect-timeout 10| tr ',' '\n' | grep 'tag_name' | cut -d\" -f4)")"
-    if [[ "$XTLS" = "true" ]]; then
-        NEW_VER=v4.32.1
-    fi
-
-    if [[ $? -ne 0 ]] || [[ $NEW_VER == "" ]]; then
-        colorEcho $RED " 检查V2ray版本信息失败，请检查网络"
-        return 3
-    elif [[ $RETVAL -ne 0 ]];then
-        return 2
-    elif [[ $NEW_VER != $CUR_VER ]];then
-        return 1
-    fi
-    return 0
+check_ver_comparison(){
+	brook_now_ver=$(${brook_file} -v|awk '{print $3}')
+	[[ -z ${brook_now_ver} ]] && echo -e "${Error} Brook 当前版本获取失败 !" && exit 1
+	brook_now_ver="v${brook_now_ver}"
+	if [[ "${brook_now_ver}" != "${brook_new_ver}" ]]; then
+		echo -e "${Info} 发现 Brook 已有新版本 [ ${brook_new_ver} ]，旧版本 [ ${brook_now_ver} ]"
+		read -e -p "是否更新 ? [Y/n] :" yn
+		[[ -z "${yn}" ]] && yn="y"
+		if [[ $yn == [Yy] ]]; then
+			check_pid
+			[[ ! -z $PID ]] && kill -9 ${PID}
+			rm -rf ${brook_file}
+			Download_brook
+			Start_brook
+		fi
+	else
+		echo -e "${Info} 当前 Brook 已是最新版本 [ ${brook_new_ver} ]" && exit 1
+	fi
 }
-
-archAffix(){
-    case "$(uname -m)" in
-        i686|i386)
-            echo '32'
-        ;;
-        x86_64|amd64)
-            echo '64'
-        ;;
-        *armv7*)
-            echo 'arm32-v7a'
-            ;;
-        armv6*)
-            echo 'arm32-v6a'
-        ;;
-        *armv8*|aarch64)
-            echo 'arm64-v8a'
-        ;;
-        *mips64le*)
-            echo 'mips64le'
-        ;;
-        *mips64*)
-            echo 'mips64'
-        ;;
-        *mipsle*)
-            echo 'mipsle'
-        ;;
-        *mips*)
-            echo 'mips'
-        ;;
-        *s390x*)
-            echo 's390x'
-        ;;
-        ppc64le)
-            echo 'ppc64le'
-        ;;
-        ppc64)
-            echo 'ppc64'
-        ;;
-        *)
-            colorEcho $RED " 不支持的CPU架构！"
-            exit 1
-        ;;
-    esac
-
-	return 0
+Download_brook(){
+	[[ ! -e ${file} ]] && mkdir ${file}
+	cd ${file}
+	if [[ ${bit} == "x86_64" ]]; then
+		wget --no-check-certificate -N "https://ghproxy.com/https://github.com/txthinking/brook/releases/download/${brook_new_ver}/brook"
+	else
+		wget --no-check-certificate -N "https://ghproxy.com/https://github.com/txthinking/brook/releases/download/${brook_new_ver}/brook_linux_386"
+		mv brook_linux_386 brook
+	fi
+	[[ ! -e "brook" ]] && echo -e "${Error} Brook 下载失败 !" && exit 1
+	chmod +x brook
 }
-
-getData() {
-    if [[ "$TLS" = "true" || "$XTLS" = "true" ]]; then
-        echo ""
-        echo " V2ray一键脚本，运行之前请确认如下条件已经具备："
-        colorEcho ${YELLOW} "  1. 一个伪装域名"
-        colorEcho ${YELLOW} "  2. 伪装域名DNS解析指向当前服务器ip（${IP}）"
-        colorEcho ${BLUE} "  3. 如果/root目录下有 v2ray.pem 和 v2ray.key 证书密钥文件，无需理会条件2"
-        echo " "
-        read -p " 确认满足按y，按其他退出脚本：" answer
-        if [[ "${answer,,}" != "y" ]]; then
-            exit 0
-        fi
-
-        echo ""
-        while true
-        do
-            read -p " 请输入伪装域名：" DOMAIN
-            if [[ -z "${DOMAIN}" ]]; then
-                colorEcho ${RED} " 域名输入错误，请重新输入！"
-            else
-                break
-            fi
-        done
-        DOMAIN=${DOMAIN,,}
-        colorEcho ${BLUE}  " 伪装域名(host)：$DOMAIN"
-
-        if [[ -f ~/v2ray.pem && -f ~/v2ray.key ]]; then
-            colorEcho ${BLUE}  " 检测到自有证书，将使用其部署"
-            CERT_FILE="/etc/v2ray/${DOMAIN}.pem"
-            KEY_FILE="/etc/v2ray/${DOMAIN}.key"
-        else
-            resolve=`curl -sL https://hijk.art/hostip.php?d=${DOMAIN}`
-            res=`echo -n ${resolve} | grep ${IP}`
-            if [[ -z "${res}" ]]; then
-                colorEcho ${BLUE}  "${DOMAIN} 解析结果：${resolve}"
-                colorEcho ${RED}  " 接口异常请自行检测解析结果(${IP})!"
-                
-            fi
-        fi
-    fi
-
-    echo ""
-    if [[ "$(needNginx)" = "no" ]]; then
-        if [[ "$TLS" = "true" ]]; then
-            read -p " 请输入v2ray监听端口[强烈建议443，默认443]：" PORT
-            [[ -z "${PORT}" ]] && PORT=443
-        else
-            read -p " 请输入v2ray监听端口[100-65535的一个数字]：" PORT
-            [[ -z "${PORT}" ]] && PORT=`shuf -i200-65000 -n1`
-            if [[ "${PORT:0:1}" = "0" ]]; then
-                colorEcho ${RED}  " 端口不能以0开头"
-                exit 1
-            fi
-        fi
-        colorEcho ${BLUE}  " v2ray端口：$PORT"
-    else
-        read -p " 请输入Nginx监听端口[100-65535的一个数字，默认443]：" PORT
-        [[ -z "${PORT}" ]] && PORT=443
-        if [ "${PORT:0:1}" = "0" ]; then
-            colorEcho ${BLUE}  " 端口不能以0开头"
-            exit 1
-        fi
-        colorEcho ${BLUE}  " Nginx端口：$PORT"
-        V2PORT=`shuf -i10000-65000 -n1`
-    fi
-
-    if [[ "$KCP" = "true" ]]; then
-        echo ""
-        colorEcho $BLUE " 请选择伪装类型："
-        echo "   1) 无"
-        echo "   2) BT下载"
-        echo "   3) 视频通话"
-        echo "   4) 微信视频通话"
-        echo "   5) dtls"
-        echo "   6) wiregard"
-        read -p "  请选择伪装类型[默认：无]：" answer
-        case $answer in
-            2)
-                HEADER_TYPE="utp"
-                ;;
-            3)
-                HEADER_TYPE="srtp"
-                ;;
-            4)
-                HEADER_TYPE="wechat-video"
-                ;;
-            5)
-                HEADER_TYPE="dtls"
-                ;;
-            6)
-                HEADER_TYPE="wireguard"
-                ;;
-            *)
-                HEADER_TYPE="none"
-                ;;
-        esac
-        colorEcho $BLUE " 伪装类型：$HEADER_TYPE"
-        SEED=`cat /proc/sys/kernel/random/uuid`
-    fi
-
-    if [[ "$TROJAN" = "true" ]]; then
-        echo ""
-        read -p " 请设置trojan密码（不输则随机生成）:" PASSWORD
-        [[ -z "$PASSWORD" ]] && PASSWORD=`cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1`
-        colorEcho $BLUE " trojan密码：$PASSWORD"
-    fi
-
-    if [[ "$XTLS" = "true" ]]; then
-        echo ""
-        colorEcho $BLUE " 请选择流控模式:" 
-        echo -e "   1) xtls-rprx-direct [$RED推荐$PLAIN]"
-        echo "   2) xtls-rprx-origin"
-        read -p "  请选择流控模式[默认:direct]" answer
-        [[ -z "$answer" ]] && answer=1
-        case $answer in
-            1)
-                FLOW="xtls-rprx-direct"
-                ;;
-            2)
-                FLOW="xtls-rprx-origin"
-                ;;
-            *)
-                colorEcho $RED " 无效选项，使用默认的xtls-rprx-direct"
-                FLOW="xtls-rprx-direct"
-                ;;
-        esac
-        colorEcho $BLUE " 流控模式：$FLOW"
-    fi
-
-    if [[ "${WS}" = "true" ]]; then
-        echo ""
-        while true
-        do
-            read -p " 请输入伪装路径，以/开头(不懂请直接回车)：" WSPATH
-            if [[ -z "${WSPATH}" ]]; then
-                len=`shuf -i5-12 -n1`
-                ws=`cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w $len | head -n 1`
-                WSPATH="/$ws"
-                break
-            elif [[ "${WSPATH:0:1}" != "/" ]]; then
-                colorEcho ${RED}  " 伪装路径必须以/开头！"
-            elif [[ "${WSPATH}" = "/" ]]; then
-                colorEcho ${RED}   " 不能使用根路径！"
-            else
-                break
-            fi
-        done
-        colorEcho ${BLUE}  " ws路径：$WSPATH"
-    fi
-
-    if [[ "$TLS" = "true" || "$XTLS" = "true" ]]; then
-        echo ""
-        colorEcho $BLUE " 请选择伪装站类型:"
-        echo "   1) 静态网站(位于/usr/share/nginx/html)"
-        echo "   2) 小说站(随机选择)"
-        echo "   3) 美女站(https://imeizi.me)"
-        echo "   4) 高清壁纸站(https://bing.imeizi.me)"
-        echo "   5) 自定义反代站点(需以http或者https开头)"
-        read -p "  请选择伪装网站类型[默认:高清壁纸站]" answer
-        if [[ -z "$answer" ]]; then
-            PROXY_URL="https://bing.imeizi.me"
-        else
-            case $answer in
-            1)
-                PROXY_URL=""
-                ;;
-            2)
-                len=${#SITES[@]}
-                ((len--))
-                while true
-                do
-                    index=`shuf -i0-${len} -n1`
-                    PROXY_URL=${SITES[$index]}
-                    host=`echo ${PROXY_URL} | cut -d/ -f3`
-                    ip=`curl -sL https://hijk.art/hostip.php?d=${host}`
-                    res=`echo -n ${ip} | grep ${host}`
-                    if [[ "${res}" = "" ]]; then
-                        echo "$ip $host" >> /etc/hosts
-                        break
-                    fi
-                done
-                ;;
-            3)
-                PROXY_URL="https://imeizi.me"
-                ;;
-            4)
-                PROXY_URL="https://bing.imeizi.me"
-                ;;
-            5)
-                read -p " 请输入反代站点(以http或者https开头)：" PROXY_URL
-                if [[ -z "$PROXY_URL" ]]; then
-                    colorEcho $RED " 请输入反代网站！"
-                    exit 1
-                elif [[ "${PROXY_URL:0:4}" != "http" ]]; then
-                    colorEcho $RED " 反代网站必须以http或https开头！"
-                    exit 1
-                fi
-                ;;
-            *)
-                colorEcho $RED " 请输入正确的选项！"
-                exit 1
-            esac
-        fi
-        REMOTE_HOST=`echo ${PROXY_URL} | cut -d/ -f3`
-        colorEcho $BLUE " 伪装网站：$PROXY_URL"
-
-        echo ""
-        colorEcho $BLUE "  是否允许搜索引擎爬取网站？[默认：不允许]"
-        echo "    y)允许，会有更多ip请求网站，但会消耗一些流量，vps流量充足情况下推荐使用"
-        echo "    n)不允许，爬虫不会访问网站，访问ip比较单一，但能节省vps流量"
-        read -p "  请选择：[y/n]" answer
-        if [[ -z "$answer" ]]; then
-            ALLOW_SPIDER="n"
-        elif [[ "${answer,,}" = "y" ]]; then
-            ALLOW_SPIDER="y"
-        else
-            ALLOW_SPIDER="n"
-        fi
-        colorEcho $BLUE " 允许搜索引擎：$ALLOW_SPIDER"
-    fi
-
-    echo ""
-    read -p " 是否安装BBR(默认安装)?[y/n]:" NEED_BBR
-    [[ -z "$NEED_BBR" ]] && NEED_BBR=y
-    [[ "$NEED_BBR" = "Y" ]] && NEED_BBR=y
-    colorEcho $BLUE " 安装BBR：$NEED_BBR"
+Service_brook(){
+	if [[ ${release} = "centos" ]]; then
+		if ! wget --no-check-certificate https://ghproxy.com/https://raw.githubusercontent.com/ToyoDAdoubiBackup/doubi/master/service/brook-pf_centos -O /etc/init.d/brook-pf; then
+			echo -e "${Error} Brook服务 管理脚本下载失败 !" && exit 1
+		fi
+		chmod +x /etc/init.d/brook-pf
+		chkconfig --add brook-pf
+		chkconfig brook-pf on
+	else
+		if ! wget --no-check-certificate https://ghproxy.com/https://raw.githubusercontent.com/ToyoDAdoubiBackup/doubi/master/service/brook-pf_debian -O /etc/init.d/brook-pf; then
+			echo -e "${Error} Brook服务 管理脚本下载失败 !" && exit 1
+		fi
+		chmod +x /etc/init.d/brook-pf
+		update-rc.d -f brook-pf defaults
+	fi
+	echo -e "${Info} Brook服务 管理脚本下载完成 !"
 }
-
-installNginx() {
-    echo ""
-    colorEcho $BLUE " 安装nginx..."
-    if [[ "$BT" = "false" ]]; then
-        if [[ "$PMT" = "yum" ]]; then
-            $CMD_INSTALL epel-release
-            if [[ "$?" != "0" ]]; then
-                echo '[nginx-stable]
-name=nginx stable repo
-baseurl=http://nginx.org/packages/centos/$releasever/$basearch/
-gpgcheck=1
-enabled=1
-gpgkey=https://nginx.org/keys/nginx_signing.key
-module_hotfixes=true' > /etc/yum.repos.d/nginx.repo
-            fi
-        fi
-        $CMD_INSTALL nginx
-        if [[ "$?" != "0" ]]; then
-            colorEcho $RED " Nginx安装失败，请到 https://hijk.art 反馈"
-            exit 1
-        fi
-        systemctl enable nginx
-    else
-        res=`which nginx 2>/dev/null`
-        if [[ "$?" != "0" ]]; then
-            colorEcho $RED " 您安装了宝塔，请在宝塔后台安装nginx后再运行本脚本"
-            exit 1
-        fi
-    fi
+Installation_dependency(){
+	\cp -f /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 }
-
-startNginx() {
-    if [[ "$BT" = "false" ]]; then
-        systemctl start nginx
-    else
-        nginx -c /www/server/nginx/conf/nginx.conf
-    fi
+Read_config(){
+	[[ ! -e ${brook_conf} ]] && echo -e "${Error} Brook 配置文件不存在 !" && exit 1
+	user_all=$(cat ${brook_conf})
+	user_all_num=$(echo "${user_all}"|wc -l)
+	[[ -z ${user_all} ]] && echo -e "${Error} Brook 配置文件中用户配置为空 !" && exit 1
 }
-
-stopNginx() {
-    if [[ "$BT" = "false" ]]; then
-        systemctl stop nginx
-    else
-        res=`ps aux | grep -i nginx`
-        if [[ "$res" != "" ]]; then
-            nginx -s stop
-        fi
-    fi
+Set_pf_Enabled(){
+	echo -e "立即启用该端口转发，还是禁用？ [Y/n]"
+	read -e -p "(默认: Y 启用):" pf_Enabled_un
+	[[ -z ${pf_Enabled_un} ]] && pf_Enabled_un="y"
+	if [[ ${pf_Enabled_un} == [Yy] ]]; then
+		bk_Enabled="1"
+	else
+		bk_Enabled="0"
+	fi
 }
-
-getCert() {
-    mkdir -p /etc/v2ray
-    if [[ -z ${CERT_FILE+x} ]]; then
-        stopNginx
-        sleep 2
-        res=`netstat -ntlp| grep -E ':80 |:443 '`
-        if [[ "${res}" != "" ]]; then
-            colorEcho ${RED}  " 其他进程占用了80或443端口，请先关闭再运行一键脚本"
-            echo " 端口占用信息如下："
-            echo ${res}
-            exit 1
-        fi
-
-        $CMD_INSTALL socat openssl
-        if [[ "$PMT" = "yum" ]]; then
-            $CMD_INSTALL cronie
-            systemctl start crond
-            systemctl enable crond
-        else
-            $CMD_INSTALL cron
-            systemctl start cron
-            systemctl enable cron
-        fi
-        curl -sL https://get.acme.sh | sh -s email=hijk.pw@protonmail.ch
-        source ~/.bashrc
-        ~/.acme.sh/acme.sh  --upgrade  --auto-upgrade
-        ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-        if [[ "$BT" = "false" ]]; then
-            ~/.acme.sh/acme.sh   --issue -d $DOMAIN --keylength ec-256 --pre-hook "systemctl stop nginx" --post-hook "systemctl restart nginx"  --standalone
-        else
-            ~/.acme.sh/acme.sh   --issue -d $DOMAIN --keylength ec-256 --pre-hook "nginx -s stop || { echo -n ''; }" --post-hook "nginx -c /www/server/nginx/conf/nginx.conf || { echo -n ''; }"  --standalone
-        fi
-        [[ -f ~/.acme.sh/${DOMAIN}_ecc/ca.cer ]] || {
-            colorEcho $RED " 获取证书失败，请复制上面的红色文字到 https://hijk.art 反馈"
-            exit 1
-        }
-        CERT_FILE="/etc/v2ray/${DOMAIN}.pem"
-        KEY_FILE="/etc/v2ray/${DOMAIN}.key"
-        ~/.acme.sh/acme.sh  --install-cert -d $DOMAIN --ecc \
-            --key-file       $KEY_FILE  \
-            --fullchain-file $CERT_FILE \
-            --reloadcmd     "service nginx force-reload"
-        [[ -f $CERT_FILE && -f $KEY_FILE ]] || {
-            colorEcho $RED " 获取证书失败，请到 https://hijk.art 反馈"
-            exit 1
-        }
-    else
-        cp ~/v2ray.pem /etc/v2ray/${DOMAIN}.pem
-        cp ~/v2ray.key /etc/v2ray/${DOMAIN}.key
-    fi
+Set_port_Modify(){
+	while true
+		do
+		echo -e "请选择并输入要修改的 Brook 端口转发本地监听端口 [1-65535]"
+		read -e -p "(默认取消):" bk_port_Modify
+		[[ -z "${bk_port_Modify}" ]] && echo "取消..." && exit 1
+		echo $((${bk_port_Modify}+0)) &>/dev/null
+		if [[ $? -eq 0 ]]; then
+			if [[ ${bk_port_Modify} -ge 1 ]] && [[ ${bk_port_Modify} -le 65535 ]]; then
+				check_port "${bk_port_Modify}"
+				if [[ $? == 0 ]]; then
+					break
+				else
+					echo -e "${Error} 该本地监听端口不存在 [${bk_port_Modify}] !"
+				fi
+			else
+				echo "输入错误, 请输入正确的端口。"
+			fi
+		else
+			echo "输入错误, 请输入正确的端口。"
+		fi
+	done
 }
-
-configNginx() {
-    mkdir -p /usr/share/nginx/html;
-    if [[ "$ALLOW_SPIDER" = "n" ]]; then
-        echo 'User-Agent: *' > /usr/share/nginx/html/robots.txt
-        echo 'Disallow: /' >> /usr/share/nginx/html/robots.txt
-        ROBOT_CONFIG="    location = /robots.txt {}"
-    else
-        ROBOT_CONFIG=""
-    fi
-
-    if [[ "$BT" = "false" ]]; then
-        if [[ ! -f /etc/nginx/nginx.conf.bak ]]; then
-            mv /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
-        fi
-        res=`id nginx 2>/dev/null`
-        if [[ "$?" != "0" ]]; then
-            user="www-data"
-        else
-            user="nginx"
-        fi
-        cat > /etc/nginx/nginx.conf<<-EOF
-user $user;
-worker_processes auto;
-error_log /var/log/nginx/error.log;
-pid /run/nginx.pid;
-
-# Load dynamic modules. See /usr/share/doc/nginx/README.dynamic.
-include /usr/share/nginx/modules/*.conf;
-
-events {
-    worker_connections 1024;
+Set_port(){
+	while true
+		do
+		echo -e "请输入 Brook 本地监听端口 [1-65535]（端口不能重复，避免冲突）"
+		read -e -p "(默认取消):" bk_port
+		[[ -z "${bk_port}" ]] && echo "已取消..." && exit 1
+		echo $((${bk_port}+0)) &>/dev/null
+		if [[ $? -eq 0 ]]; then
+			if [[ ${bk_port} -ge 1 ]] && [[ ${bk_port} -le 65535 ]]; then
+				echo && echo "========================"
+				echo -e "	本地监听端口 : ${Red_background_prefix} ${bk_port} ${Font_color_suffix}"
+				echo "========================" && echo
+				break
+			else
+				echo "输入错误, 请输入正确的端口。"
+			fi
+		else
+			echo "输入错误, 请输入正确的端口。"
+		fi
+		done
 }
-
-http {
-    log_format  main  '\$remote_addr - \$remote_user [\$time_local] "\$request" '
-                      '\$status \$body_bytes_sent "\$http_referer" '
-                      '"\$http_user_agent" "\$http_x_forwarded_for"';
-
-    access_log  /var/log/nginx/access.log  main;
-    server_tokens off;
-
-    sendfile            on;
-    tcp_nopush          on;
-    tcp_nodelay         on;
-    keepalive_timeout   65;
-    types_hash_max_size 2048;
-    gzip                on;
-
-    include             /etc/nginx/mime.types;
-    default_type        application/octet-stream;
-
-    # Load modular configuration files from the /etc/nginx/conf.d directory.
-    # See http://nginx.org/en/docs/ngx_core_module.html#include
-    # for more information.
-    include /etc/nginx/conf.d/*.conf;
+Set_IP_pf(){
+	echo "请输入被转发的 IP :"
+	read -e -p "(默认取消):" bk_ip_pf
+	[[ -z "${bk_ip_pf}" ]] && echo "已取消..." && exit 1
+	echo && echo "========================"
+	echo -e "	被转发IP : ${Red_background_prefix} ${bk_ip_pf} ${Font_color_suffix}"
+	echo "========================" && echo
 }
-EOF
-    fi
-
-    if [[ "$PROXY_URL" = "" ]]; then
-        action=""
-    else
-        action="proxy_ssl_server_name on;
-        proxy_pass $PROXY_URL;
-        proxy_set_header Accept-Encoding '';
-        sub_filter \"$REMOTE_HOST\" \"$DOMAIN\";
-        sub_filter_once off;"
-    fi
-
-    if [[ "$TLS" = "true" || "$XTLS" = "true" ]]; then
-        mkdir -p $NGINX_CONF_PATH
-        # VMESS+WS+TLS
-        # VLESS+WS+TLS
-        if [[ "$WS" = "true" ]]; then
-            cat > ${NGINX_CONF_PATH}${DOMAIN}.conf<<-EOF
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${DOMAIN};
-    return 301 https://\$server_name:${PORT}\$request_uri;
+Set_port_pf(){
+	while true
+		do
+		echo -e "请输入 Brook 被转发的端口 [1-65535]"
+		read -e -p "(默认取消):" bk_port_pf
+		[[ -z "${bk_port_pf}" ]] && echo "已取消..." && exit 1
+		echo $((${bk_port_pf}+0)) &>/dev/null
+		if [[ $? -eq 0 ]]; then
+			if [[ ${bk_port_pf} -ge 1 ]] && [[ ${bk_port_pf} -le 65535 ]]; then
+				echo && echo "========================"
+				echo -e "	被转发端口 : ${Red_background_prefix} ${bk_port_pf} ${Font_color_suffix}"
+				echo "========================" && echo
+				break
+			else
+				echo "输入错误, 请输入正确的端口。"
+			fi
+		else
+			echo "输入错误, 请输入正确的端口。"
+		fi
+		done
 }
-
-server {
-    listen       ${PORT} ssl http2;
-    listen       [::]:${PORT} ssl http2;
-    server_name ${DOMAIN};
-    charset utf-8;
-
-    # ssl配置
-    ssl_protocols TLSv1.1 TLSv1.2;
-    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE:ECDH:AES:HIGH:!NULL:!aNULL:!MD5:!ADH:!RC4;
-    ssl_ecdh_curve secp384r1;
-    ssl_prefer_server_ciphers on;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    ssl_session_tickets off;
-    ssl_certificate $CERT_FILE;
-    ssl_certificate_key $KEY_FILE;
-
-    root /usr/share/nginx/html;
-    location / {
-        $action
-    }
-    $ROBOT_CONFIG
-
-    location ${WSPATH} {
-      proxy_redirect off;
-      proxy_pass http://127.0.0.1:${V2PORT};
-      proxy_http_version 1.1;
-      proxy_set_header Upgrade \$http_upgrade;
-      proxy_set_header Connection "upgrade";
-      proxy_set_header Host \$host;
-      # Show real IP in v2ray access.log
-      proxy_set_header X-Real-IP \$remote_addr;
-      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    }
+Set_brook(){
+	check_installed_status
+	echo && echo -e "你要做什么？
+ ${Green_font_prefix}1.${Font_color_suffix}  添加 端口转发
+ ${Green_font_prefix}2.${Font_color_suffix}  删除 端口转发
+ ${Green_font_prefix}3.${Font_color_suffix}  修改 端口转发
+ ${Green_font_prefix}4.${Font_color_suffix}  启用/禁用 端口转发
+ 
+ ${Tip} 本地监听端口不能重复，被转发的IP或端口可重复!" && echo
+	read -e -p "(默认: 取消):" bk_modify
+	[[ -z "${bk_modify}" ]] && echo "已取消..." && exit 1
+	if [[ ${bk_modify} == "1" ]]; then
+		Add_pf
+	elif [[ ${bk_modify} == "2" ]]; then
+		Del_pf
+	elif [[ ${bk_modify} == "3" ]]; then
+		Modify_pf
+	elif [[ ${bk_modify} == "4" ]]; then
+		Modify_Enabled_pf
+	else
+		echo -e "${Error} 请输入正确的数字(1-4)" && exit 1
+	fi
 }
-EOF
-        else
-            # VLESS+TCP+TLS
-            # VLESS+TCP+XTLS
-            # trojan
-            cat > ${NGINX_CONF_PATH}${DOMAIN}.conf<<-EOF
-server {
-    listen 80;
-    listen [::]:80;
-    listen 81 http2;
-    server_name ${DOMAIN};
-    root /usr/share/nginx/html;
-    location / {
-        $action
-    }
-    $ROBOT_CONFIG
+check_port(){
+	check_port_1=$1
+	user_all=$(cat ${brook_conf}|sed '1d;/^\s*$/d')
+	#[[ -z "${user_all}" ]] && echo -e "${Error} Brook 配置文件中用户配置为空 !" && exit 1
+	check_port_statu=$(echo "${user_all}"|awk '{print $1}'|grep -w "${check_port_1}")
+	if [[ ! -z "${check_port_statu}" ]]; then
+		return 0
+	else
+		return 1
+	fi
 }
-EOF
-        fi
-    fi
+list_port(){
+	port_Type=$1
+	user_all=$(cat ${brook_conf}|sed '/^\s*$/d')
+	if [[ -z "${user_all}" ]]; then
+		if [[ "${port_Type}" == "ADD" ]]; then
+			echo -e "${Info} 目前 Brook 配置文件中用户配置为空。"
+		else
+			echo -e "${Info} 目前 Brook 配置文件中用户配置为空。" && exit 1
+		fi
+	else
+		user_num=$(echo -e "${user_all}"|wc -l)
+		for((integer = 1; integer <= ${user_num}; integer++))
+		do
+			user_port=$(echo "${user_all}"|sed -n "${integer}p"|awk '{print $1}')
+			user_ip_pf=$(echo "${user_all}"|sed -n "${integer}p"|awk '{print $2}')
+			user_port_pf=$(echo "${user_all}"|sed -n "${integer}p"|awk '{print $3}')
+			user_Enabled_pf=$(echo "${user_all}"|sed -n "${integer}p"|awk '{print $4}')
+			if [[ ${user_Enabled_pf} == "0" ]]; then
+				user_Enabled_pf_1="${Red_font_prefix}禁用${Font_color_suffix}"
+			else
+				user_Enabled_pf_1="${Green_font_prefix}启用${Font_color_suffix}"
+			fi
+			user_list_all=${user_list_all}"本地监听端口: ${Green_font_prefix}"${user_port}"${Font_color_suffix}\t 被转发IP: ${Green_font_prefix}"${user_ip_pf}"${Font_color_suffix}\t 被转发端口: ${Green_font_prefix}"${user_port_pf}"${Font_color_suffix}\t 状态: ${user_Enabled_pf_1}\n"
+			user_IP=""
+		done
+		ip=$(wget -qO- -t1 -T2 ipinfo.io/ip)
+		if [[ -z "${ip}" ]]; then
+			ip=$(wget -qO- -t1 -T2 api.ip.sb/ip)
+			if [[ -z "${ip}" ]]; then
+				ip=$(wget -qO- -t1 -T2 members.3322.org/dyndns/getip)
+				if [[ -z "${ip}" ]]; then
+					ip="VPS_IP"
+				fi
+			fi
+		fi
+		echo -e "当前端口转发总数: ${Green_background_prefix} "${user_num}" ${Font_color_suffix} 当前服务器IP: ${Green_background_prefix} "${ip}" ${Font_color_suffix}"
+		echo -e "${user_list_all}"
+		echo -e "========================\n"
+	fi
 }
-
-setSelinux() {
-    if [[ -s /etc/selinux/config ]] && grep 'SELINUX=enforcing' /etc/selinux/config; then
-        sed -i 's/SELINUX=enforcing/SELINUX=permissive/g' /etc/selinux/config
-        setenforce 0
-    fi
+Add_pf(){
+	while true
+	do
+		list_port "ADD"
+		Set_port
+		check_port "${bk_port}"
+		[[ $? == 0 ]] && echo -e "${Error} 该本地监听端口已使用 [${bk_port}] !" && exit 1
+		Set_IP_pf
+		Set_port_pf
+		Set_pf_Enabled
+		echo "${bk_port} ${bk_ip_pf} ${bk_port_pf} ${bk_Enabled}" >> ${brook_conf}
+		Add_success=$(cat ${brook_conf}| grep ${bk_port})
+		if [[ -z "${Add_success}" ]]; then
+			echo -e "${Error} 端口转发 添加失败 ${Green_font_prefix}[端口: ${bk_port} 被转发IP和端口: ${bk_ip_pf}:${bk_port_pf}]${Font_color_suffix} "
+			break
+		else
+			Add_iptables
+			Save_iptables
+			echo -e "${Info} 端口转发 添加成功 ${Green_font_prefix}[端口: ${bk_port} 被转发IP和端口: ${bk_ip_pf}:${bk_port_pf}]${Font_color_suffix}\n"
+			read -e -p "是否继续 添加端口转发配置？[Y/n]:" addyn
+			[[ -z ${addyn} ]] && addyn="y"
+			if [[ ${addyn} == [Nn] ]]; then
+				Restart_brook
+				break
+			else
+				echo -e "${Info} 继续 添加端口转发配置..."
+				user_list_all=""
+			fi
+		fi
+	done
 }
-
-setFirewall() {
-    res=`which firewall-cmd 2>/dev/null`
-    if [[ $? -eq 0 ]]; then
-        systemctl status firewalld > /dev/null 2>&1
-        if [[ $? -eq 0 ]];then
-            firewall-cmd --permanent --add-service=http
-            firewall-cmd --permanent --add-service=https
-            if [[ "$PORT" != "443" ]]; then
-                firewall-cmd --permanent --add-port=${PORT}/tcp
-                firewall-cmd --permanent --add-port=${PORT}/udp
-            fi
-            firewall-cmd --reload
-        else
-            nl=`iptables -nL | nl | grep FORWARD | awk '{print $1}'`
-            if [[ "$nl" != "3" ]]; then
-                iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-                iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-                if [[ "$PORT" != "443" ]]; then
-                    iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT
-                    iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT
-                fi
-            fi
-        fi
-    else
-        res=`which iptables 2>/dev/null`
-        if [[ $? -eq 0 ]]; then
-            nl=`iptables -nL | nl | grep FORWARD | awk '{print $1}'`
-            if [[ "$nl" != "3" ]]; then
-                iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-                iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-                if [[ "$PORT" != "443" ]]; then
-                    iptables -I INPUT -p tcp --dport ${PORT} -j ACCEPT
-                    iptables -I INPUT -p udp --dport ${PORT} -j ACCEPT
-                fi
-            fi
-        else
-            res=`which ufw 2>/dev/null`
-            if [[ $? -eq 0 ]]; then
-                res=`ufw status | grep -i inactive`
-                if [[ "$res" = "" ]]; then
-                    ufw allow http/tcp
-                    ufw allow https/tcp
-                    if [[ "$PORT" != "443" ]]; then
-                        ufw allow ${PORT}/tcp
-                        ufw allow ${PORT}/udp
-                    fi
-                fi
-            fi
-        fi
-    fi
+Del_pf(){
+	while true
+	do
+		list_port
+		Set_port
+		check_port "${bk_port}"
+		[[ $? == 1 ]] && echo -e "${Error} 该本地监听端口不存在 [${bk_port}] !" && exit 1
+		sed -i "/^${bk_port} /d" ${brook_conf}
+		Del_success=$(cat ${brook_conf}| grep ${bk_port})
+		if [[ ! -z "${Del_success}" ]]; then
+			echo -e "${Error} 端口转发 删除失败 ${Green_font_prefix}[端口: ${bk_port}]${Font_color_suffix} "
+			break
+		else
+			port=${bk_port}
+			Del_iptables
+			Save_iptables
+			echo -e "${Info} 端口转发 删除成功 ${Green_font_prefix}[端口: ${bk_port}]${Font_color_suffix}\n"
+			port_num=$(cat ${brook_conf}|sed '/^\s*$/d'|wc -l)
+			if [[ ${port_num} == 0 ]]; then
+				echo -e "${Error} 已无任何端口 !"
+				check_pid
+				if [[ ! -z ${PID} ]]; then
+					Stop_brook
+				fi
+				break
+			else
+				read -e -p "是否继续 删除端口转发配置？[Y/n]:" delyn
+				[[ -z ${delyn} ]] && delyn="y"
+				if [[ ${delyn} == [Nn] ]]; then
+					Restart_brook
+					break
+				else
+					echo -e "${Info} 继续 删除端口转发配置..."
+					user_list_all=""
+				fi
+			fi
+		fi
+	done
 }
-
-installBBR() {
-    if [[ "$NEED_BBR" != "y" ]]; then
-        INSTALL_BBR=false
-        return
-    fi
-    result=$(lsmod | grep bbr)
-    if [[ "$result" != "" ]]; then
-        colorEcho $BLUE " BBR模块已安装"
-        INSTALL_BBR=false
-        return
-    fi
-    res=`hostnamectl | grep -i openvz`
-    if [[ "$res" != "" ]]; then
-        colorEcho $BLUE " openvz机器，跳过安装"
-        INSTALL_BBR=false
-        return
-    fi
-    
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    sysctl -p
-    result=$(lsmod | grep bbr)
-    if [[ "$result" != "" ]]; then
-        colorEcho $GREEN " BBR模块已启用"
-        INSTALL_BBR=false
-        return
-    fi
-
-    colorEcho $BLUE " 安装BBR模块..."
-    if [[ "$PMT" = "yum" ]]; then
-        if [[ "$V6_PROXY" = "" ]]; then
-            rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org
-            rpm -Uvh http://www.elrepo.org/elrepo-release-7.0-4.el7.elrepo.noarch.rpm
-            $CMD_INSTALL --enablerepo=elrepo-kernel kernel-ml
-            $CMD_REMOVE kernel-3.*
-            grub2-set-default 0
-            echo "tcp_bbr" >> /etc/modules-load.d/modules.conf
-            INSTALL_BBR=true
-        fi
-    else
-        $CMD_INSTALL --install-recommends linux-generic-hwe-16.04
-        grub-set-default 0
-        echo "tcp_bbr" >> /etc/modules-load.d/modules.conf
-        INSTALL_BBR=true
-    fi
+Modify_pf(){
+	list_port
+	Set_port_Modify
+	echo -e "\n${Info} 开始输入新端口... \n"
+	Set_port
+	check_port "${bk_port}"
+	[[ $? == 0 ]] && echo -e "${Error} 该端口已存在 [${bk_port}] !" && exit 1
+	Set_IP_pf
+	Set_port_pf
+	sed -i "/^${bk_port_Modify} /d" ${brook_conf}
+	Set_pf_Enabled
+	echo "${bk_port} ${bk_ip_pf} ${bk_port_pf} ${bk_Enabled}" >> ${brook_conf}
+	Modify_success=$(cat ${brook_conf}| grep "${bk_port} ${bk_ip_pf} ${bk_port_pf} ${bk_Enabled}")
+	if [[ -z "${Modify_success}" ]]; then
+		echo -e "${Error} 端口转发 修改失败 ${Green_font_prefix}[端口: ${bk_port} 被转发IP和端口: ${bk_ip_pf}:${bk_port_pf}]${Font_color_suffix}"
+		exit 1
+	else
+		port=${bk_port_Modify}
+		Del_iptables
+		Add_iptables
+		Save_iptables
+		Restart_brook
+		echo -e "${Info} 端口转发 修改成功 ${Green_font_prefix}[端口: ${bk_port} 被转发IP和端口: ${bk_ip_pf}:${bk_port_pf}]${Font_color_suffix}\n"
+	fi
 }
-
-installV2ray() {
-    rm -rf /tmp/v2ray
-    mkdir -p /tmp/v2ray
-    DOWNLOAD_LINK="${V6_PROXY}https://github.com/v2fly/v2ray-core/releases/download/${NEW_VER}/v2ray-linux-$(archAffix).zip"
-    colorEcho $BLUE " 下载V2Ray: ${DOWNLOAD_LINK}"
-    curl -L -H "Cache-Control: no-cache" -o /tmp/v2ray/v2ray.zip ${DOWNLOAD_LINK}
-    if [ $? != 0 ];then
-        colorEcho $RED " 下载V2ray文件失败，请检查服务器网络设置"
-        exit 1
-    fi
-    mkdir -p '/etc/v2ray' '/var/log/v2ray' && \
-    unzip /tmp/v2ray/v2ray.zip -d /tmp/v2ray
-    mkdir -p /usr/bin/v2ray
-    cp /tmp/v2ray/v2ctl /usr/bin/v2ray/; cp /tmp/v2ray/v2ray /usr/bin/v2ray/; cp /tmp/v2ray/geo* /usr/bin/v2ray/;
-    chmod +x '/usr/bin/v2ray/v2ray' '/usr/bin/v2ray/v2ctl' || {
-        colorEcho $RED " V2ray安装失败"
-        exit 1
-    }
-
-    cat >$SERVICE_FILE<<-EOF
-[Unit]
-Description=V2ray Service
-Documentation=https://hijk.art
-After=network.target nss-lookup.target
-
-[Service]
-# If the version of systemd is 240 or above, then uncommenting Type=exec and commenting out Type=simple
-#Type=exec
-Type=simple
-# This service runs as root. You may consider to run it as another user for security concerns.
-# By uncommenting User=nobody and commenting out User=root, the service will run as user nobody.
-# More discussion at https://github.com/v2ray/v2ray-core/issues/1011
-User=root
-#User=nobody
-NoNewPrivileges=true
-ExecStart=/usr/bin/v2ray/v2ray -config /etc/v2ray/config.json
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable v2ray.service
+Modify_Enabled_pf(){
+	list_port
+	Set_port_Modify
+	user_pf_text=$(cat ${brook_conf}|sed '/^\s*$/d'|grep "${bk_port_Modify}")
+	user_port_text=$(echo ${user_pf_text}|awk '{print $1}')
+	user_ip_pf_text=$(echo ${user_pf_text}|awk '{print $2}')
+	user_port_pf_text=$(echo ${user_pf_text}|awk '{print $3}')
+	user_Enabled_pf_text=$(echo ${user_pf_text}|awk '{print $4}')
+	if [[ ${user_Enabled_pf_text} == "0" ]]; then
+		echo -e "该端口转发已${Red_font_prefix}禁用${Font_color_suffix}，是否${Green_font_prefix}启用${Font_color_suffix}？ [Y/n]"
+		read -e -p "(默认: Y 启用):" user_Enabled_pf_text_un
+		[[ -z ${user_Enabled_pf_text_un} ]] && user_Enabled_pf_text_un="y"
+		if [[ ${user_Enabled_pf_text_un} == [Yy] ]]; then
+			user_Enabled_pf_text_1="1"
+			sed -i "/^${bk_port_Modify} /d" ${brook_conf}
+			echo "${user_port_text} ${user_ip_pf_text} ${user_port_pf_text} ${user_Enabled_pf_text_1}" >> ${brook_conf}
+			Modify_Enabled_success=$(cat ${brook_conf}| grep "${user_port_text} ${user_ip_pf_text} ${user_port_pf_text} ${user_Enabled_pf_text_1}")
+			if [[ -z "${Modify_Enabled_success}" ]]; then
+				echo -e "${Error} 端口转发 启用失败 ${Green_font_prefix}[端口: ${user_port_text} 被转发IP和端口: ${user_ip_pf_text}:${user_port_pf_text}]${Font_color_suffix}"
+				exit 1
+			else
+				echo -e "${Info} 端口转发 启用成功 ${Green_font_prefix}[端口: ${user_port_text} 被转发IP和端口: ${user_ip_pf_text}:${user_port_pf_text}]${Font_color_suffix}\n"
+				Restart_brook
+			fi
+		else
+			echo "已取消..." && exit 0
+		fi
+	else
+		echo -e "该端口转发已${Green_font_prefix}启用${Font_color_suffix}，是否${Red_font_prefix}禁用${Font_color_suffix}？ [Y/n]"
+		read -e -p "(默认: Y 禁用):" user_Enabled_pf_text_un
+		[[ -z ${user_Enabled_pf_text_un} ]] && user_Enabled_pf_text_un="y"
+		if [[ ${user_Enabled_pf_text_un} == [Yy] ]]; then
+			user_Enabled_pf_text_1="0"
+			sed -i "/^${bk_port_Modify} /d" ${brook_conf}
+			echo "${user_port_text} ${user_ip_pf_text} ${user_port_pf_text} ${user_Enabled_pf_text_1}" >> ${brook_conf}
+			Modify_Enabled_success=$(cat ${brook_conf}| grep "${user_port_text} ${user_ip_pf_text} ${user_port_pf_text} ${user_Enabled_pf_text_1}")
+			if [[ -z "${Modify_Enabled_success}" ]]; then
+				echo -e "${Error} 端口转发 禁用失败 ${Green_font_prefix}[端口: ${user_port_text} 被转发IP和端口: ${user_ip_pf_text}:${user_port_pf_text}]${Font_color_suffix}"
+				exit 1
+			else
+				echo -e "${Info} 端口转发 禁用成功 ${Green_font_prefix}[端口: ${user_port_text} 被转发IP和端口: ${user_ip_pf_text}:${user_port_pf_text}]${Font_color_suffix}\n"
+				Restart_brook
+			fi
+		else
+			echo "已取消..." && exit 0
+		fi
+	fi
 }
-
-trojanConfig() {
-    cat > $CONFIG_FILE<<-EOF
-{
-  "inbounds": [{
-    "port": $PORT,
-    "protocol": "trojan",
-    "settings": {
-      "clients": [
-        {
-          "password": "$PASSWORD"
-        }
-      ],
-      "fallbacks": [
-        {
-              "alpn": "http/1.1",
-              "dest": 80
-          },
-          {
-              "alpn": "h2",
-              "dest": 81
-          }
-      ]
-    },
-    "streamSettings": {
-        "network": "tcp",
-        "security": "tls",
-        "tlsSettings": {
-            "serverName": "$DOMAIN",
-            "alpn": ["http/1.1", "h2"],
-            "certificates": [
-                {
-                    "certificateFile": "$CERT_FILE",
-                    "keyFile": "$KEY_FILE"
-                }
-            ]
-        }
-    }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  },{
-    "protocol": "blackhole",
-    "settings": {},
-    "tag": "blocked"
-  }],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
+Install_brook(){
+	check_root
+	[[ -e ${brook_file} ]] && echo -e "${Error} 检测到 Brook 已安装 !" && exit 1
+	echo -e "${Info} 开始安装/配置 依赖..."
+	Installation_dependency
+	echo -e "${Info} 开始检测最新版本..."
+	check_new_ver
+	echo -e "${Info} 开始下载/安装..."
+	Download_brook
+	echo -e "${Info} 开始下载/安装 服务脚本(init)..."
+	Service_brook
+	echo -e "${Info} 开始写入 配置文件..."
+	echo "" > ${brook_conf}
+	echo -e "${Info} 开始设置 iptables防火墙..."
+	Set_iptables
+	echo -e "${Info} Brook 安装完成！默认配置文件为空，请选择 [7.设置 Brook 端口转发 - 1.添加 端口转发] 来添加端口转发。"
 }
-EOF
+Start_brook(){
+	check_installed_status
+	check_pid
+	[[ ! -z ${PID} ]] && echo -e "${Error} Brook 正在运行，请检查 !" && exit 1
+	/etc/init.d/brook-pf start
 }
-
-trojanXTLSConfig() {
-    cat > $CONFIG_FILE<<-EOF
-{
-  "inbounds": [{
-    "port": $PORT,
-    "protocol": "trojan",
-    "settings": {
-      "clients": [
-        {
-          "password": "$PASSWORD",
-          "flow": "$FLOW"
-        }
-      ],
-      "fallbacks": [
-          {
-              "alpn": "http/1.1",
-              "dest": 80
-          },
-          {
-              "alpn": "h2",
-              "dest": 81
-          }
-      ]
-    },
-    "streamSettings": {
-        "network": "tcp",
-        "security": "xtls",
-        "xtlsSettings": {
-            "serverName": "$DOMAIN",
-            "alpn": ["http/1.1", "h2"],
-            "certificates": [
-                {
-                    "certificateFile": "$CERT_FILE",
-                    "keyFile": "$KEY_FILE"
-                }
-            ]
-        }
-    }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  },{
-    "protocol": "blackhole",
-    "settings": {},
-    "tag": "blocked"
-  }],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
+Stop_brook(){
+	check_installed_status
+	check_pid
+	[[ -z ${PID} ]] && echo -e "${Error} Brook 没有运行，请检查 !" && exit 1
+	/etc/init.d/brook-pf stop
 }
-EOF
+Restart_brook(){
+	check_installed_status
+	check_pid
+	[[ ! -z ${PID} ]] && /etc/init.d/brook-pf stop
+	/etc/init.d/brook-pf start
 }
-
-vmessConfig() {
-    local uuid="$(cat '/proc/sys/kernel/random/uuid')"
-    local alterid=`shuf -i50-80 -n1`
-    cat > $CONFIG_FILE<<-EOF
-{
-  "inbounds": [{
-    "port": $PORT,
-    "protocol": "vmess",
-    "settings": {
-      "clients": [
-        {
-          "id": "$uuid",
-          "level": 1,
-          "alterId": $alterid
-        }
-      ]
-    }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  },{
-    "protocol": "blackhole",
-    "settings": {},
-    "tag": "blocked"
-  }],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
+Update_brook(){
+	check_installed_status
+	echo && echo -e "请选择你的服务器是国内还是国外
+ ${Green_font_prefix}1.${Font_color_suffix}  国内服务器(逗比云)
+ ${Green_font_prefix}2.${Font_color_suffix}  国外服务器(Github)
+ 
+ ${Tip} 因为国内对 Github 限速，这会导致国内服务器下载速度极慢，所以选择 国内服务器 选项就会从我的 逗比云 下载!" && echo
+	read -e -p "(默认: 2 国外服务器):" bk_Download
+	[[ -z "${bk_Download}" ]] && bk_Download="2"
+	if [[ ${bk_Download} == "1" ]]; then
+		Download_type="1"
+	else
+		Download_type="2"
+	fi
+	check_new_ver
+	check_ver_comparison
 }
-EOF
+Uninstall_brook(){
+	check_installed_status
+	echo -e "确定要卸载 Brook ? [y/N]\n"
+	read -e -p "(默认: n):" unyn
+	[[ -z ${unyn} ]] && unyn="n"
+	if [[ ${unyn} == [Yy] ]]; then
+		check_pid
+		[[ ! -z $PID ]] && kill -9 ${PID}
+		if [[ -e ${brook_conf} ]]; then
+			user_all=$(cat ${brook_conf}|sed '/^\s*$/d')
+			user_all_num=$(echo "${user_all}"|wc -l)
+			if [[ ! -z ${user_all} ]]; then
+				for((integer = 1; integer <= ${user_all_num}; integer++))
+				do
+					port=$(echo "${user_all}"|sed -n "${integer}p"|awk '{print $1}')
+					Del_iptables
+				done
+				Save_iptables
+			fi
+		fi
+		if [[ ! -z $(crontab -l | grep "brook-pf.sh monitor") ]]; then
+			crontab_monitor_brook_cron_stop
+		fi
+		rm -rf ${file}
+		if [[ ${release} = "centos" ]]; then
+			chkconfig --del brook-pf
+		else
+			update-rc.d -f brook-pf remove
+		fi
+		rm -rf /etc/init.d/brook-pf
+		echo && echo "Brook 卸载完成 !" && echo
+	else
+		echo && echo "卸载已取消..." && echo
+	fi
 }
-
-vmessKCPConfig() {
-    local uuid="$(cat '/proc/sys/kernel/random/uuid')"
-    local alterid=`shuf -i50-80 -n1`
-    cat > $CONFIG_FILE<<-EOF
-{
-  "inbounds": [{
-    "port": $PORT,
-    "protocol": "vmess",
-    "settings": {
-      "clients": [
-        {
-          "id": "$uuid",
-          "level": 1,
-          "alterId": $alterid
-        }
-      ]
-    },
-    "streamSettings": {
-        "network": "mkcp",
-        "kcpSettings": {
-            "uplinkCapacity": 100,
-            "downlinkCapacity": 100,
-            "congestion": true,
-            "header": {
-                "type": "$HEADER_TYPE"
-            },
-            "seed": "$SEED"
-        }
-    }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  },{
-    "protocol": "blackhole",
-    "settings": {},
-    "tag": "blocked"
-  }],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
+View_Log(){
+	check_installed_status
+	[[ ! -e ${brook_log} ]] && echo -e "${Error} Brook 日志文件不存在 !" && exit 1
+	echo && echo -e "${Tip} 按 ${Red_font_prefix}Ctrl+C${Font_color_suffix} 终止查看日志(正常情况是没有使用日志记录的)" && echo -e "如果需要查看完整日志内容，请用 ${Red_font_prefix}cat ${brook_log}${Font_color_suffix} 命令。" && echo
+	tail -f ${brook_log}
 }
-EOF
+Set_crontab_monitor_brook(){
+	check_installed_status
+	check_crontab_installed_status
+	crontab_monitor_brook_status=$(crontab -l|grep "brook-pf.sh monitor")
+	if [[ -z "${crontab_monitor_brook_status}" ]]; then
+		echo && echo -e "当前监控模式: ${Green_font_prefix}未开启${Font_color_suffix}" && echo
+		echo -e "确定要开启 ${Green_font_prefix}Brook 服务端运行状态监控${Font_color_suffix} 功能吗？(当进程关闭则自动启动 Brook 服务端)[Y/n]"
+		read -e -p "(默认: y):" crontab_monitor_brook_status_ny
+		[[ -z "${crontab_monitor_brook_status_ny}" ]] && crontab_monitor_brook_status_ny="y"
+		if [[ ${crontab_monitor_brook_status_ny} == [Yy] ]]; then
+			crontab_monitor_brook_cron_start
+		else
+			echo && echo "	已取消..." && echo
+		fi
+	else
+		echo && echo -e "当前监控模式: ${Green_font_prefix}已开启${Font_color_suffix}" && echo
+		echo -e "确定要关闭 ${Green_font_prefix}Brook 服务端运行状态监控${Font_color_suffix} 功能吗？(当进程关闭则自动启动 Brook 服务端)[y/N]"
+		read -e -p "(默认: n):" crontab_monitor_brook_status_ny
+		[[ -z "${crontab_monitor_brook_status_ny}" ]] && crontab_monitor_brook_status_ny="n"
+		if [[ ${crontab_monitor_brook_status_ny} == [Yy] ]]; then
+			crontab_monitor_brook_cron_stop
+		else
+			echo && echo "	已取消..." && echo
+		fi
+	fi
 }
-
-vmessTLSConfig() {
-    local uuid="$(cat '/proc/sys/kernel/random/uuid')"
-    cat > $CONFIG_FILE<<-EOF
-{
-  "inbounds": [{
-    "port": $PORT,
-    "protocol": "vmess",
-    "settings": {
-      "clients": [
-        {
-          "id": "$uuid",
-          "level": 1,
-          "alterId": 0
-        }
-      ],
-      "disableInsecureEncryption": false
-    },
-    "streamSettings": {
-        "network": "tcp",
-        "security": "tls",
-        "tlsSettings": {
-            "serverName": "$DOMAIN",
-            "alpn": ["http/1.1", "h2"],
-            "certificates": [
-                {
-                    "certificateFile": "$CERT_FILE",
-                    "keyFile": "$KEY_FILE"
-                }
-            ]
-        }
-    }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  },{
-    "protocol": "blackhole",
-    "settings": {},
-    "tag": "blocked"
-  }],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
+crontab_monitor_brook_cron_start(){
+	crontab -l > "$file_1/crontab.bak"
+	sed -i "/brook-pf.sh monitor/d" "$file_1/crontab.bak"
+	echo -e "\n* * * * * /bin/bash $file_1/brook-pf.sh monitor" >> "$file_1/crontab.bak"
+	crontab "$file_1/crontab.bak"
+	rm -r "$file_1/crontab.bak"
+	cron_config=$(crontab -l | grep "brook-pf.sh monitor")
+	if [[ -z ${cron_config} ]]; then
+		echo -e "${Error} Brook 服务端运行状态监控功能 启动失败 !" && exit 1
+	else
+		echo -e "${Info} Brook 服务端运行状态监控功能 启动成功 !"
+	fi
 }
-EOF
+crontab_monitor_brook_cron_stop(){
+	crontab -l > "$file_1/crontab.bak"
+	sed -i "/brook-pf.sh monitor/d" "$file_1/crontab.bak"
+	crontab "$file_1/crontab.bak"
+	rm -r "$file_1/crontab.bak"
+	cron_config=$(crontab -l | grep "brook-pf.sh monitor")
+	if [[ ! -z ${cron_config} ]]; then
+		echo -e "${Error} Brook 服务端运行状态监控功能 停止失败 !" && exit 1
+	else
+		echo -e "${Info} Brook 服务端运行状态监控功能 停止成功 !"
+	fi
 }
-
-vmessWSConfig() {
-    local uuid="$(cat '/proc/sys/kernel/random/uuid')"
-    cat > $CONFIG_FILE<<-EOF
-{
-  "inbounds": [{
-    "port": $V2PORT,
-    "listen": "127.0.0.1",
-    "protocol": "vmess",
-    "settings": {
-      "clients": [
-        {
-          "id": "$uuid",
-          "level": 1,
-          "alterId": 0
-        }
-      ],
-      "disableInsecureEncryption": false
-    },
-    "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-            "path": "$WSPATH",
-            "headers": {
-                "Host": "$DOMAIN"
-            }
-        }
-    }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  },{
-    "protocol": "blackhole",
-    "settings": {},
-    "tag": "blocked"
-  }],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
+crontab_monitor_brook(){
+	check_installed_status
+	check_pid
+	echo "${PID}"
+	if [[ -z ${PID} ]]; then
+		echo -e "${Error} [$(date "+%Y-%m-%d %H:%M:%S %u %Z")] 检测到 Brook服务端 未运行 , 开始启动..." | tee -a ${brook_log}
+		/etc/init.d/brook-pf start
+		sleep 1s
+		check_pid
+		if [[ -z ${PID} ]]; then
+			echo -e "${Error} [$(date "+%Y-%m-%d %H:%M:%S %u %Z")] Brook服务端 启动失败..." | tee -a ${brook_log}
+		else
+			echo -e "${Info} [$(date "+%Y-%m-%d %H:%M:%S %u %Z")] Brook服务端 启动成功..." | tee -a ${brook_log}
+		fi
+	else
+		echo -e "${Info} [$(date "+%Y-%m-%d %H:%M:%S %u %Z")] Brook服务端 进程运行正常..." | tee -a ${brook_log}
+	fi
 }
-EOF
+Add_iptables(){
+	iptables -I INPUT -m state --state NEW -m tcp -p tcp --dport ${bk_port} -j ACCEPT
+	iptables -I INPUT -m state --state NEW -m udp -p udp --dport ${bk_port} -j ACCEPT
 }
-
-vlessTLSConfig() {
-    local uuid="$(cat '/proc/sys/kernel/random/uuid')"
-    cat > $CONFIG_FILE<<-EOF
-{
-  "inbounds": [{
-    "port": $PORT,
-    "protocol": "vless",
-    "settings": {
-      "clients": [
-        {
-          "id": "$uuid",
-          "level": 0
-        }
-      ],
-      "decryption": "none",
-      "fallbacks": [
-          {
-              "alpn": "http/1.1",
-              "dest": 80
-          },
-          {
-              "alpn": "h2",
-              "dest": 81
-          }
-      ]
-    },
-    "streamSettings": {
-        "network": "tcp",
-        "security": "tls",
-        "tlsSettings": {
-            "serverName": "$DOMAIN",
-            "alpn": ["http/1.1", "h2"],
-            "certificates": [
-                {
-                    "certificateFile": "$CERT_FILE",
-                    "keyFile": "$KEY_FILE"
-                }
-            ]
-        }
-    }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  },{
-    "protocol": "blackhole",
-    "settings": {},
-    "tag": "blocked"
-  }],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
+Del_iptables(){
+	iptables -D INPUT -m state --state NEW -m tcp -p tcp --dport ${port} -j ACCEPT
+	iptables -D INPUT -m state --state NEW -m udp -p udp --dport ${port} -j ACCEPT
 }
-EOF
+Save_iptables(){
+	if [[ ${release} == "centos" ]]; then
+		service iptables save
+	else
+		iptables-save > /etc/iptables.up.rules
+	fi
 }
-
-vlessXTLSConfig() {
-    local uuid="$(cat '/proc/sys/kernel/random/uuid')"
-    cat > $CONFIG_FILE<<-EOF
-{
-  "inbounds": [{
-    "port": $PORT,
-    "protocol": "vless",
-    "settings": {
-      "clients": [
-        {
-          "id": "$uuid",
-          "flow": "$FLOW",
-          "level": 0
-        }
-      ],
-      "decryption": "none",
-      "fallbacks": [
-          {
-              "alpn": "http/1.1",
-              "dest": 80
-          },
-          {
-              "alpn": "h2",
-              "dest": 81
-          }
-      ]
-    },
-    "streamSettings": {
-        "network": "tcp",
-        "security": "xtls",
-        "xtlsSettings": {
-            "serverName": "$DOMAIN",
-            "alpn": ["http/1.1", "h2"],
-            "certificates": [
-                {
-                    "certificateFile": "$CERT_FILE",
-                    "keyFile": "$KEY_FILE"
-                }
-            ]
-        }
-    }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  },{
-    "protocol": "blackhole",
-    "settings": {},
-    "tag": "blocked"
-  }],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
+Set_iptables(){
+	if [[ ${release} == "centos" ]]; then
+		service iptables save
+		chkconfig --level 2345 iptables on
+	else
+		iptables-save > /etc/iptables.up.rules
+		echo -e '#!/bin/bash\n/sbin/iptables-restore < /etc/iptables.up.rules' > /etc/network/if-pre-up.d/iptables
+		chmod +x /etc/network/if-pre-up.d/iptables
+	fi
 }
-EOF
+Update_Shell(){
+	sh_new_ver=$(wget --no-check-certificate -qO- -t1 -T3 "https://raw.githubusercontent.com/ToyoDAdoubiBackup/doubi/master/brook-pf.sh"|grep 'sh_ver="'|awk -F "=" '{print $NF}'|sed 's/\"//g'|head -1) && sh_new_type="github"
+	[[ -z ${sh_new_ver} ]] && echo -e "${Error} 无法链接到 Github !" && exit 0
+	if [[ -e "/etc/init.d/brook-pf" ]]; then
+		rm -rf /etc/init.d/brook-pf
+		Service_brook
+	fi
+	wget -N --no-check-certificate "https://raw.githubusercontent.com/ToyoDAdoubiBackup/doubi/master/brook-pf.sh" && chmod +x brook.sh
+	echo -e "脚本已更新为最新版本[ ${sh_new_ver} ] !(注意：因为更新方式为直接覆盖当前运行的脚本，所以可能下面会提示一些报错，无视即可)" && exit 0
 }
-
-vlessWSConfig() {
-    local uuid="$(cat '/proc/sys/kernel/random/uuid')"
-    cat > $CONFIG_FILE<<-EOF
-{
-  "inbounds": [{
-    "port": $V2PORT,
-    "listen": "127.0.0.1",
-    "protocol": "vless",
-    "settings": {
-        "clients": [
-            {
-                "id": "$uuid",
-                "level": 0
-            }
-        ],
-        "decryption": "none"
-    },
-    "streamSettings": {
-        "network": "ws",
-        "security": "none",
-        "wsSettings": {
-            "path": "$WSPATH",
-            "headers": {
-                "Host": "$DOMAIN"
-            }
-        }
-    }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  },{
-    "protocol": "blackhole",
-    "settings": {},
-    "tag": "blocked"
-  }],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
-}
-EOF
-}
-
-vlessKCPConfig() {
-    local uuid="$(cat '/proc/sys/kernel/random/uuid')"
-    cat > $CONFIG_FILE<<-EOF
-{
-  "inbounds": [{
-    "port": $PORT,
-    "protocol": "vless",
-    "settings": {
-      "clients": [
-        {
-          "id": "$uuid",
-          "level": 0
-        }
-      ],
-      "decryption": "none"
-    },
-    "streamSettings": {
-        "streamSettings": {
-            "network": "mkcp",
-            "kcpSettings": {
-                "uplinkCapacity": 100,
-                "downlinkCapacity": 100,
-                "congestion": true,
-                "header": {
-                    "type": "$HEADER_TYPE"
-                },
-                "seed": "$SEED"
-            }
-        }
-    }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  },{
-    "protocol": "blackhole",
-    "settings": {},
-    "tag": "blocked"
-  }],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
-}
-EOF
-}
-
-configV2ray() {
-    mkdir -p /etc/v2ray
-    if [[ "$TROJAN" = "true" ]]; then
-        if [[ "$XTLS" = "true" ]]; then
-            trojanXTLSConfig
-        else
-            trojanConfig
-        fi
-        return 0
-    fi
-    if [[ "$VLESS" = "false" ]]; then
-        # VMESS + kcp
-        if [[ "$KCP" = "true" ]]; then
-            vmessKCPConfig
-            return 0
-        fi
-        # VMESS
-        if [[ "$TLS" = "false" ]]; then
-            vmessConfig
-        elif [[ "$WS" = "false" ]]; then
-            # VMESS+TCP+TLS
-            vmessTLSConfig
-        # VMESS+WS+TLS
-        else
-            vmessWSConfig
-        fi
-    #VLESS
-    else
-        if [[ "$KCP" = "true" ]]; then
-            vlessKCPConfig
-            return 0
-        fi
-        # VLESS+TCP
-        if [[ "$WS" = "false" ]]; then
-            # VLESS+TCP+TLS
-            if [[ "$XTLS" = "false" ]]; then
-                vlessTLSConfig
-            # VLESS+TCP+XTLS
-            else
-                vlessXTLSConfig
-            fi
-        # VLESS+WS+TLS
-        else
-            vlessWSConfig
-        fi
-    fi
-}
-
-install() {
-    getData
-
-    $PMT clean all
-    [[ "$PMT" = "apt" ]] && $PMT update
-    #echo $CMD_UPGRADE | bash
-    $CMD_INSTALL wget vim unzip tar gcc openssl
-    $CMD_INSTALL net-tools
-    if [[ "$PMT" = "apt" ]]; then
-        $CMD_INSTALL libssl-dev g++
-    fi
-    res=`which unzip 2>/dev/null`
-    if [[ $? -ne 0 ]]; then
-        colorEcho $RED " unzip安装失败，请检查网络"
-        exit 1
-    fi
-
-    installNginx
-    setFirewall
-    if [[ "$TLS" = "true" || "$XTLS" = "true" ]]; then
-        getCert
-    fi
-    configNginx
-
-    colorEcho $BLUE " 安装V2ray..."
-    getVersion
-    RETVAL="$?"
-    if [[ $RETVAL == 0 ]]; then
-        colorEcho $BLUE " V2ray最新版 ${CUR_VER} 已经安装"
-    elif [[ $RETVAL == 3 ]]; then
-        exit 1
-    else
-        colorEcho $BLUE " 安装V2Ray ${NEW_VER} ，架构$(archAffix)"
-        installV2ray
-    fi
-
-    configV2ray
-
-    setSelinux
-    installBBR
-
-    start
-    showInfo
-
-    bbrReboot
-}
-
-bbrReboot() {
-    if [[ "${INSTALL_BBR}" == "true" ]]; then
-        echo  
-        echo " 为使BBR模块生效，系统将在30秒后重启"
-        echo  
-        echo -e " 您可以按 ctrl + c 取消重启，稍后输入 ${RED}reboot${PLAIN} 重启系统"
-        sleep 30
-        reboot
-    fi
-}
-
-update() {
-    res=`status`
-    if [[ $res -lt 2 ]]; then
-        colorEcho $RED " V2ray未安装，请先安装！"
-        return
-    fi
-
-    getVersion
-    RETVAL="$?"
-    if [[ $RETVAL == 0 ]]; then
-        colorEcho $BLUE " V2ray最新版 ${CUR_VER} 已经安装"
-    elif [[ $RETVAL == 3 ]]; then
-        exit 1
-    else
-        colorEcho $BLUE " 安装V2Ray ${NEW_VER} ，架构$(archAffix)"
-        installV2ray
-        stop
-        start
-
-        colorEcho $GREEN " 最新版V2ray安装成功！"
-    fi
-}
-
-uninstall() {
-    res=`status`
-    if [[ $res -lt 2 ]]; then
-        colorEcho $RED " V2ray未安装，请先安装！"
-        return
-    fi
-
-    echo ""
-    read -p " 确定卸载V2ray？[y/n]：" answer
-    if [[ "${answer,,}" = "y" ]]; then
-        domain=`grep Host $CONFIG_FILE | cut -d: -f2 | tr -d \",' '`
-        if [[ "$domain" = "" ]]; then
-            domain=`grep serverName $CONFIG_FILE | cut -d: -f2 | tr -d \",' '`
-        fi
-        
-        stop
-        systemctl disable v2ray
-        rm -rf $SERVICE_FILE
-        rm -rf /etc/v2ray
-        rm -rf /usr/bin/v2ray
-
-        if [[ "$BT" = "false" ]]; then
-            systemctl disable nginx
-            $CMD_REMOVE nginx
-            if [[ "$PMT" = "apt" ]]; then
-                $CMD_REMOVE nginx-common
-            fi
-            rm -rf /etc/nginx/nginx.conf
-            if [[ -f /etc/nginx/nginx.conf.bak ]]; then
-                mv /etc/nginx/nginx.conf.bak /etc/nginx/nginx.conf
-            fi
-        fi
-        if [[ "$domain" != "" ]]; then
-            rm -rf $NGINX_CONF_PATH${domain}.conf
-        fi
-        [[ -f ~/.acme.sh/acme.sh ]] && ~/.acme.sh/acme.sh --uninstall
-        colorEcho $GREEN " V2ray卸载成功"
-    fi
-}
-
-start() {
-    res=`status`
-    if [[ $res -lt 2 ]]; then
-        colorEcho $RED " V2ray未安装，请先安装！"
-        return
-    fi
-    stopNginx
-    startNginx
-    systemctl restart v2ray
-    sleep 2
-    port=`grep port $CONFIG_FILE| head -n 1| cut -d: -f2| tr -d \",' '`
-    res=`ss -nutlp| grep ${port} | grep -i v2ray`
-    if [[ "$res" = "" ]]; then
-        colorEcho $RED " v2ray启动失败，请检查日志或查看端口是否被占用！"
-    else
-        colorEcho $BLUE " v2ray启动成功"
-    fi
-}
-
-stop() {
-    stopNginx
-    systemctl stop v2ray
-    colorEcho $BLUE " V2ray停止成功"
-}
-
-
-restart() {
-    res=`status`
-    if [[ $res -lt 2 ]]; then
-        colorEcho $RED " V2ray未安装，请先安装！"
-        return
-    fi
-
-    stop
-    start
-}
-
-getConfigFileInfo() {
-    vless="false"
-    tls="false"
-    ws="false"
-    xtls="false"
-    trojan="false"
-    protocol="VMess"
-    kcp="false"
-
-    uid=`grep id $CONFIG_FILE | head -n1| cut -d: -f2 | tr -d \",' '`
-    alterid=`grep alterId $CONFIG_FILE  | cut -d: -f2 | tr -d \",' '`
-    network=`grep network $CONFIG_FILE  | tail -n1| cut -d: -f2 | tr -d \",' '`
-    [[ -z "$network" ]] && network="tcp"
-    domain=`grep serverName $CONFIG_FILE | cut -d: -f2 | tr -d \",' '`
-    if [[ "$domain" = "" ]]; then
-        domain=`grep Host $CONFIG_FILE | cut -d: -f2 | tr -d \",' '`
-        if [[ "$domain" != "" ]]; then
-            ws="true"
-            tls="true"
-            wspath=`grep path $CONFIG_FILE | cut -d: -f2 | tr -d \",' '`
-        fi
-    else
-        tls="true"
-    fi
-    if [[ "$ws" = "true" ]]; then
-        port=`grep -i ssl $NGINX_CONF_PATH${domain}.conf| head -n1 | awk '{print $2}'`
-    else
-        port=`grep port $CONFIG_FILE | cut -d: -f2 | tr -d \",' '`
-    fi
-    res=`grep -i kcp $CONFIG_FILE`
-    if [[ "$res" != "" ]]; then
-        kcp="true"
-        type=`grep header -A 3 $CONFIG_FILE | grep 'type' | cut -d: -f2 | tr -d \",' '`
-        seed=`grep seed $CONFIG_FILE | cut -d: -f2 | tr -d \",' '`
-    fi
-
-    vmess=`grep vmess $CONFIG_FILE`
-    if [[ "$vmess" = "" ]]; then
-        trojan=`grep trojan $CONFIG_FILE`
-        if [[ "$trojan" = "" ]]; then
-            vless="true"
-            protocol="VLESS"
-        else
-            trojan="true"
-            password=`grep password $CONFIG_FILE | cut -d: -f2 | tr -d \",' '`
-            protocol="trojan"
-        fi
-        tls="true"
-        encryption="none"
-        xtls=`grep xtlsSettings $CONFIG_FILE`
-        if [[ "$xtls" != "" ]]; then
-            xtls="true"
-            flow=`grep flow $CONFIG_FILE | cut -d: -f2 | tr -d \",' '`
-        else
-            flow="无"
-        fi
-    fi
-}
-
-outputVmess() {
-    raw="{
-  \"v\":\"2\",
-  \"ps\":\"\",
-  \"add\":\"$IP\",
-  \"port\":\"${port}\",
-  \"id\":\"${uid}\",
-  \"aid\":\"$alterid\",
-  \"net\":\"tcp\",
-  \"type\":\"none\",
-  \"host\":\"\",
-  \"path\":\"\",
-  \"tls\":\"\"
-}"
-    link=`echo -n ${raw} | base64 -w 0`
-    link="vmess://${link}"
-
-    echo -e "   ${BLUE}IP(address): ${PLAIN} ${RED}${IP}${PLAIN}"
-    echo -e "   ${BLUE}端口(port)：${PLAIN}${RED}${port}${PLAIN}"
-    echo -e "   ${BLUE}id(uuid)：${PLAIN}${RED}${uid}${PLAIN}"
-    echo -e "   ${BLUE}额外id(alterid)：${PLAIN} ${RED}${alterid}${PLAIN}"
-    echo -e "   ${BLUE}加密方式(security)：${PLAIN} ${RED}auto${PLAIN}"
-    echo -e "   ${BLUE}传输协议(network)：${PLAIN} ${RED}${network}${PLAIN}" 
-    echo  
-    echo -e "   ${BLUE}vmess链接:${PLAIN} $RED$link$PLAIN"
-}
-
-outputVmessKCP() {
-    echo -e "   ${BLUE}IP(address): ${PLAIN} ${RED}${IP}${PLAIN}"
-    echo -e "   ${BLUE}端口(port)：${PLAIN}${RED}${port}${PLAIN}"
-    echo -e "   ${BLUE}id(uuid)：${PLAIN}${RED}${uid}${PLAIN}"
-    echo -e "   ${BLUE}额外id(alterid)：${PLAIN} ${RED}${alterid}${PLAIN}"
-    echo -e "   ${BLUE}加密方式(security)：${PLAIN} ${RED}auto${PLAIN}"
-    echo -e "   ${BLUE}传输协议(network)：${PLAIN} ${RED}${network}${PLAIN}"
-    echo -e "   ${BLUE}伪装类型(type)：${PLAIN} ${RED}${type}${PLAIN}"
-    echo -e "   ${BLUE}mkcp seed：${PLAIN} ${RED}${seed}${PLAIN}" 
-}
-
-outputTrojan() {
-    if [[ "$xtls" = "true" ]]; then
-        echo -e "   ${BLUE}IP/域名(address): ${PLAIN} ${RED}${domain}${PLAIN}"
-        echo -e "   ${BLUE}端口(port)：${PLAIN}${RED}${port}${PLAIN}"
-        echo -e "   ${BLUE}密码(password)：${PLAIN}${RED}${password}${PLAIN}"
-        echo -e "   ${BLUE}流控(flow)：${PLAIN}$RED$flow${PLAIN}"
-        echo -e "   ${BLUE}加密(encryption)：${PLAIN} ${RED}none${PLAIN}"
-        echo -e "   ${BLUE}传输协议(network)：${PLAIN} ${RED}${network}${PLAIN}" 
-        echo -e "   ${BLUE}底层安全传输(tls)：${PLAIN}${RED}XTLS${PLAIN}"
-    else
-        echo -e "   ${BLUE}IP/域名(address): ${PLAIN} ${RED}${domain}${PLAIN}"
-        echo -e "   ${BLUE}端口(port)：${PLAIN}${RED}${port}${PLAIN}"
-        echo -e "   ${BLUE}密码(password)：${PLAIN}${RED}${password}${PLAIN}"
-        echo -e "   ${BLUE}传输协议(network)：${PLAIN} ${RED}${network}${PLAIN}" 
-        echo -e "   ${BLUE}底层安全传输(tls)：${PLAIN}${RED}TLS${PLAIN}"
-    fi
-}
-
-outputVmessTLS() {
-    raw="{
-  \"v\":\"2\",
-  \"ps\":\"\",
-  \"add\":\"$IP\",
-  \"port\":\"${port}\",
-  \"id\":\"${uid}\",
-  \"aid\":\"$alterid\",
-  \"net\":\"${network}\",
-  \"type\":\"none\",
-  \"host\":\"${domain}\",
-  \"path\":\"\",
-  \"tls\":\"tls\"
-}"
-    link=`echo -n ${raw} | base64 -w 0`
-    link="vmess://${link}"
-    echo -e "   ${BLUE}IP(address): ${PLAIN} ${RED}${IP}${PLAIN}"
-    echo -e "   ${BLUE}端口(port)：${PLAIN}${RED}${port}${PLAIN}"
-    echo -e "   ${BLUE}id(uuid)：${PLAIN}${RED}${uid}${PLAIN}"
-    echo -e "   ${BLUE}额外id(alterid)：${PLAIN} ${RED}${alterid}${PLAIN}"
-    echo -e "   ${BLUE}加密方式(security)：${PLAIN} ${RED}none${PLAIN}"
-    echo -e "   ${BLUE}传输协议(network)：${PLAIN} ${RED}${network}${PLAIN}" 
-    echo -e "   ${BLUE}伪装域名/主机名(host)/SNI/peer名称：${PLAIN}${RED}${domain}${PLAIN}"
-    echo -e "   ${BLUE}底层安全传输(tls)：${PLAIN}${RED}TLS${PLAIN}"
-    echo  
-    echo -e "   ${BLUE}vmess链接: ${PLAIN}$RED$link$PLAIN"
-}
-
-outputVmessWS() {
-    raw="{
-  \"v\":\"2\",
-  \"ps\":\"\",
-  \"add\":\"$IP\",
-  \"port\":\"${port}\",
-  \"id\":\"${uid}\",
-  \"aid\":\"$alterid\",
-  \"net\":\"${network}\",
-  \"type\":\"none\",
-  \"host\":\"${domain}\",
-  \"path\":\"${wspath}\",
-  \"tls\":\"tls\"
-}"
-    link=`echo -n ${raw} | base64 -w 0`
-    link="vmess://${link}"
-
-    echo -e "   ${BLUE}IP(address): ${PLAIN} ${RED}${IP}${PLAIN}"
-    echo -e "   ${BLUE}端口(port)：${PLAIN}${RED}${port}${PLAIN}"
-    echo -e "   ${BLUE}id(uuid)：${PLAIN}${RED}${uid}${PLAIN}"
-    echo -e "   ${BLUE}额外id(alterid)：${PLAIN} ${RED}${alterid}${PLAIN}"
-    echo -e "   ${BLUE}加密方式(security)：${PLAIN} ${RED}none${PLAIN}"
-    echo -e "   ${BLUE}传输协议(network)：${PLAIN} ${RED}${network}${PLAIN}" 
-    echo -e "   ${BLUE}伪装类型(type)：${PLAIN}${RED}none$PLAIN"
-    echo -e "   ${BLUE}伪装域名/主机名(host)/SNI/peer名称：${PLAIN}${RED}${domain}${PLAIN}"
-    echo -e "   ${BLUE}路径(path)：${PLAIN}${RED}${wspath}${PLAIN}"
-    echo -e "   ${BLUE}底层安全传输(tls)：${PLAIN}${RED}TLS${PLAIN}"
-    echo  
-    echo -e "   ${BLUE}vmess链接:${PLAIN} $RED$link$PLAIN"
-}
-
-showInfo() {
-    res=`status`
-    if [[ $res -lt 2 ]]; then
-        colorEcho $RED " V2ray未安装，请先安装！"
-        return
-    fi
-
-    echo ""
-    echo -n -e " ${BLUE}V2ray运行状态：${PLAIN}"
-    statusText
-    echo -e " ${BLUE}V2ray配置文件: ${PLAIN} ${RED}${CONFIG_FILE}${PLAIN}"
-    colorEcho $BLUE " V2ray配置信息："
-
-    getConfigFileInfo
-
-    echo -e "   ${BLUE}协议: ${PLAIN} ${RED}${protocol}${PLAIN}"
-    if [[ "$trojan" = "true" ]]; then
-        outputTrojan
-        return 0
-    fi
-    if [[ "$vless" = "false" ]]; then
-        if [[ "$kcp" = "true" ]]; then
-            outputVmessKCP
-            return 0
-        fi
-        if [[ "$tls" = "false" ]]; then
-            outputVmess
-        elif [[ "$ws" = "false" ]]; then
-            outputVmessTLS
-        else
-            outputVmessWS
-        fi
-    else
-        if [[ "$kcp" = "true" ]]; then
-            echo -e "   ${BLUE}IP(address): ${PLAIN} ${RED}${IP}${PLAIN}"
-            echo -e "   ${BLUE}端口(port)：${PLAIN}${RED}${port}${PLAIN}"
-            echo -e "   ${BLUE}id(uuid)：${PLAIN}${RED}${uid}${PLAIN}"
-            echo -e "   ${BLUE}加密(encryption)：${PLAIN} ${RED}none${PLAIN}"
-            echo -e "   ${BLUE}传输协议(network)：${PLAIN} ${RED}${network}${PLAIN}"
-            echo -e "   ${BLUE}伪装类型(type)：${PLAIN} ${RED}${type}${PLAIN}"
-            echo -e "   ${BLUE}mkcp seed：${PLAIN} ${RED}${seed}${PLAIN}" 
-            return 0
-        fi
-        if [[ "$xtls" = "true" ]]; then
-            echo -e "   ${BLUE}IP(address): ${PLAIN} ${RED}${IP}${PLAIN}"
-            echo -e "   ${BLUE}端口(port)：${PLAIN}${RED}${port}${PLAIN}"
-            echo -e "   ${BLUE}id(uuid)：${PLAIN}${RED}${uid}${PLAIN}"
-            echo -e "   ${BLUE}流控(flow)：${PLAIN}$RED$flow${PLAIN}"
-            echo -e "   ${BLUE}加密(encryption)：${PLAIN} ${RED}none${PLAIN}"
-            echo -e "   ${BLUE}传输协议(network)：${PLAIN} ${RED}${network}${PLAIN}" 
-            echo -e "   ${BLUE}伪装类型(type)：${PLAIN}${RED}none$PLAIN"
-            echo -e "   ${BLUE}伪装域名/主机名(host)/SNI/peer名称：${PLAIN}${RED}${domain}${PLAIN}"
-            echo -e "   ${BLUE}底层安全传输(tls)：${PLAIN}${RED}XTLS${PLAIN}"
-        elif [[ "$ws" = "false" ]]; then
-            echo -e "   ${BLUE}IP(address):  ${PLAIN}${RED}${IP}${PLAIN}"
-            echo -e "   ${BLUE}端口(port)：${PLAIN}${RED}${port}${PLAIN}"
-            echo -e "   ${BLUE}id(uuid)：${PLAIN}${RED}${uid}${PLAIN}"
-            echo -e "   ${BLUE}流控(flow)：${PLAIN}$RED$flow${PLAIN}"
-            echo -e "   ${BLUE}加密(encryption)：${PLAIN} ${RED}none${PLAIN}"
-            echo -e "   ${BLUE}传输协议(network)：${PLAIN} ${RED}${network}${PLAIN}" 
-            echo -e "   ${BLUE}伪装类型(type)：${PLAIN}${RED}none$PLAIN"
-            echo -e "   ${BLUE}伪装域名/主机名(host)/SNI/peer名称：${PLAIN}${RED}${domain}${PLAIN}"
-            echo -e "   ${BLUE}底层安全传输(tls)：${PLAIN}${RED}TLS${PLAIN}"
-        else
-            echo -e "   ${BLUE}IP(address): ${PLAIN} ${RED}${IP}${PLAIN}"
-            echo -e "   ${BLUE}端口(port)：${PLAIN}${RED}${port}${PLAIN}"
-            echo -e "   ${BLUE}id(uuid)：${PLAIN}${RED}${uid}${PLAIN}"
-            echo -e "   ${BLUE}流控(flow)：${PLAIN}$RED$flow${PLAIN}"
-            echo -e "   ${BLUE}加密(encryption)：${PLAIN} ${RED}none${PLAIN}"
-            echo -e "   ${BLUE}传输协议(network)：${PLAIN} ${RED}${network}${PLAIN}" 
-            echo -e "   ${BLUE}伪装类型(type)：${PLAIN}${RED}none$PLAIN"
-            echo -e "   ${BLUE}伪装域名/主机名(host)/SNI/peer名称：${PLAIN}${RED}${domain}${PLAIN}"
-            echo -e "   ${BLUE}路径(path)：${PLAIN}${RED}${wspath}${PLAIN}"
-            echo -e "   ${BLUE}底层安全传输(tls)：${PLAIN}${RED}TLS${PLAIN}"
-        fi
-    fi
-}
-
-showLog() {
-    res=`status`
-    if [[ $res -lt 2 ]]; then
-        colorEcho $RED " V2ray未安装，请先安装！"
-        return
-    fi
-
-    journalctl -xen -u v2ray --no-pager
-}
-
-menu() {
-    clear
-    echo "#############################################################"
-    echo -e "#                   ${RED}v2ray一键安装脚本${PLAIN}                      #"
-    echo -e "# ${GREEN}作者${PLAIN}: 网络跳越(hijk)                                      #"
-    echo -e "# ${GREEN}网址${PLAIN}: https://hijk.art                                    #"
-    echo -e "# ${GREEN}论坛${PLAIN}: https://hijk.club                                   #"
-    echo -e "# ${GREEN}TG群${PLAIN}: https://t.me/hijkclub                               #"
-    echo -e "# ${GREEN}Youtube频道${PLAIN}: https://youtube.com/channel/UCYTB--VsObzepVJtc9yvUxQ #"
-    echo "#############################################################"
-
-    echo -e "  ${GREEN}1.${PLAIN}   安装V2ray-VMESS"
-    echo -e "  ${GREEN}2.${PLAIN}   安装V2ray-${BLUE}VMESS+mKCP${PLAIN}"
-    echo -e "  ${GREEN}3.${PLAIN}   安装V2ray-VMESS+TCP+TLS"
-    echo -e "  ${GREEN}4.${PLAIN}   安装V2ray-${BLUE}VMESS+WS+TLS${PLAIN}${RED}(推荐)${PLAIN}"
-    echo -e "  ${GREEN}5.${PLAIN}   安装V2ray-${BLUE}VLESS+mKCP${PLAIN}"
-    echo -e "  ${GREEN}6.${PLAIN}   安装V2ray-VLESS+TCP+TLS"
-    echo -e "  ${GREEN}7.${PLAIN}   安装V2ray-${BLUE}VLESS+WS+TLS${PLAIN}${RED}(可过cdn)${PLAIN}"
-    echo -e "  ${GREEN}8.${PLAIN}   安装V2ray-${BLUE}VLESS+TCP+XTLS${PLAIN}${RED}(推荐)${PLAIN}"
-    echo -e "  ${GREEN}9.${PLAIN}   安装${BLUE}trojan${PLAIN}${RED}(推荐)${PLAIN}"
-    echo -e "  ${GREEN}10.${PLAIN}  安装${BLUE}trojan+XTLS${PLAIN}${RED}(推荐)${PLAIN}"
-    echo " -------------"
-    echo -e "  ${GREEN}11.${PLAIN}  更新V2ray"
-    echo -e "  ${GREEN}12.  ${RED}卸载V2ray${PLAIN}"
-    echo " -------------"
-    echo -e "  ${GREEN}13.${PLAIN}  启动V2ray"
-    echo -e "  ${GREEN}14.${PLAIN}  重启V2ray"
-    echo -e "  ${GREEN}15.${PLAIN}  停止V2ray"
-    echo " -------------"
-    echo -e "  ${GREEN}16.${PLAIN}  查看V2ray配置"
-    echo -e "  ${GREEN}17.${PLAIN}  查看V2ray日志"
-    echo " -------------"
-    echo -e "  ${GREEN}18.${PLAIN}  soga添加nginx反代"
-    echo " -------------"	
-    echo -e "  ${GREEN}0.${PLAIN}   退出"
-    echo -n " 当前状态："
-    statusText
-    echo 
-
-    read -p " 请选择操作[0-18]：" answer
-    case $answer in
-        0)
-            exit 0
-            ;;
-        1)
-            install
-            ;;
-        2)
-            KCP="true"
-            install
-            ;;
-        3)
-            TLS="true"
-            install
-            ;;
-        4)
-            TLS="true"
-            WS="true"
-            install
-            ;;
-        5)
-            VLESS="true"
-            KCP="true"
-            install
-            ;;
-        6)
-            VLESS="true"
-            TLS="true"
-            install
-            ;;
-        7)
-            VLESS="true"
-            TLS="true"
-            WS="true"
-            install
-            ;;
-        8)
-            VLESS="true"
-            TLS="true"
-            XTLS="true"
-            install
-            ;;
-        9)
-            TROJAN="true"
-            TLS="true"
-            install
-            ;;
-        10)
-            TROJAN="true"
-            TLS="true"
-            XTLS="true"
-            install
-            ;;
-        11)
-            update
-            ;;
-        12)
-            uninstall
-            ;;
-        13)
-            start
-            ;;
-        14)
-            restart
-            ;;
-        15)
-            stop
-            ;;
-        16)
-            showInfo
-            ;;
-        17)
-            showLog
-            ;;
-        18)
-		
-		WS="true"
-		TLS="true"
-		getData
-	soga config force_close_ssl=true
-    $PMT clean all
-    [[ "$PMT" = "apt" ]] && $PMT update
-    #echo $CMD_UPGRADE | bash
-    $CMD_INSTALL wget vim unzip tar gcc openssl
-    $CMD_INSTALL net-tools
-    if [[ "$PMT" = "apt" ]]; then
-        $CMD_INSTALL libssl-dev g++
-    fi
-    res=`which unzip 2>/dev/null`
-    if [[ $? -ne 0 ]]; then
-        colorEcho $RED " unzip安装失败，请检查网络"
-        exit 1
-    fi
-
-    installNginx
-    setFirewall
-    if [[ "$TLS" = "true" || "$XTLS" = "true" ]]; then
-        getCert
-    fi
-    configNginx
-    soga restart
-    service nginx restart
-	colorEcho $RED
-	colorEcho $GREEN "安装完成，v2ray监听端口为${V2PORT} ,nginx监听端口为${PORT}!"
-	colorEcho $GREEN "-----------v2board节点配置-----------------------------"
-	colorEcho $RED " 设置服务端口为${V2PORT} ,连接端口为${PORT}!"
-	colorEcho $RED "传输协议配置如下："
-	colorEcho $RED  "{"
-	colorEcho $RED  "\"path\": \"${WSPATH}\","	
-	colorEcho $RED  "\"headers\": {"
-	colorEcho $RED  "      \"Host\": \"${DOMAIN}\""	
-	colorEcho $RED  "}"
-	colorEcho $RED  "}"	
-	colorEcho $GREEN "----------sspanel节点配置----------------------"
-	colorEcho $RED  "${IP};${V2PORT};0;ws;tls;path=${WSPATH}|server=${IP}|host=${DOMAIN}"	
-			#soga config force_close_ssl=true
-			#|outside_port=${PORT}
-			# {
-            # "path": "/login",
-            # "headers": {
-                # "Host": "hg.v2rayng.xyz"
-            # }
-# }
-			
-            ;;
-        *)
-            colorEcho $RED " 请选择正确的操作！"
-            exit 1
-            ;;
-    esac
-}
-
-checkSystem
-
+check_sys
 action=$1
-[[ -z $1 ]] && action=menu
-case "$action" in
-    menu|update|uninstall|start|restart|stop|showInfo|showLog)
-        ${action}
-        ;;
-    *)
-        echo " 参数错误"
-        echo " 用法: `basename $0` [menu|update|uninstall|start|restart|stop|showInfo|showLog]"
-        ;;
+if [[ "${action}" == "monitor" ]]; then
+	crontab_monitor_brook
+else
+	echo && echo -e "  Brook 端口转发 一键管理脚本 ${Red_font_prefix}[v${sh_ver}]${Font_color_suffix}
+  ---- Toyo | doub.io/wlzy-jc37 ----
+  
+ ${Green_font_prefix} 0.${Font_color_suffix} 升级脚本
+————————————
+ ${Green_font_prefix} 1.${Font_color_suffix} 安装 Brook
+ ${Green_font_prefix} 2.${Font_color_suffix} 更新 Brook
+ ${Green_font_prefix} 3.${Font_color_suffix} 卸载 Brook
+————————————
+ ${Green_font_prefix} 4.${Font_color_suffix} 启动 Brook
+ ${Green_font_prefix} 5.${Font_color_suffix} 停止 Brook
+ ${Green_font_prefix} 6.${Font_color_suffix} 重启 Brook
+————————————
+ ${Green_font_prefix} 7.${Font_color_suffix} 设置 Brook 端口转发
+ ${Green_font_prefix} 8.${Font_color_suffix} 查看 Brook 端口转发
+ ${Green_font_prefix} 9.${Font_color_suffix} 查看 Brook 日志
+ ${Green_font_prefix}10.${Font_color_suffix} 监控 Brook 运行状态
+————————————" && echo
+if [[ -e ${brook_file} ]]; then
+	check_pid
+	if [[ ! -z "${PID}" ]]; then
+		echo -e " 当前状态: ${Green_font_prefix}已安装${Font_color_suffix} 并 ${Green_font_prefix}已启动${Font_color_suffix}"
+	else
+		echo -e " 当前状态: ${Green_font_prefix}已安装${Font_color_suffix} 但 ${Red_font_prefix}未启动${Font_color_suffix}"
+	fi
+else
+	echo -e " 当前状态: ${Red_font_prefix}未安装${Font_color_suffix}"
+fi
+echo
+read -e -p " 请输入数字 [0-10]:" num
+case "$num" in
+	0)
+	Update_Shell
+	;;
+	1)
+	Install_brook
+	;;
+	2)
+	Update_brook
+	;;
+	3)
+	Uninstall_brook
+	;;
+	4)
+	Start_brook
+	;;
+	5)
+	Stop_brook
+	;;
+	6)
+	Restart_brook
+	;;
+	7)
+	Set_brook
+	;;
+	8)
+	check_installed_status
+	list_port
+	;;
+	9)
+	View_Log
+	;;
+	10)
+	Set_crontab_monitor_brook
+	;;
+	*)
+	echo "请输入正确数字 [0-10]"
+	;;
 esac
+fi
